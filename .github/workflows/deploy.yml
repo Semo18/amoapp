@@ -75,6 +75,19 @@ jobs:
         run: |
           echo "Deploying to ${{ steps.cfg.outputs.USER }}@${{ steps.cfg.outputs.HOST }}:${{ steps.cfg.outputs.DEPLOY_DIR }}"
           echo "Environment: ${{ inputs.environment || 'dev' }}"
+      
+      - name: Debug SSH key (public part + SHA256)
+        run: |
+          set -e
+          echo "PUBLIC KEY FROM SECRET:"
+          ssh-keygen -y -f ~/.ssh/id_ed25519
+          echo "FINGERPRINT (SHA256):"
+          ssh-keygen -lf ~/.ssh/id_ed25519 -E sha256
+
+      - name: SSH ping
+        run: |
+          ssh -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes target "echo OK && whoami && hostname"
+
 
       - name: Rsync sources
         shell: bash
