@@ -15,7 +15,7 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          printf "Host amocrm-server\n  HostName amo.ap-development.com\n  User deployer\n  StrictHostKeyChecking no\n" >> ~/.ssh/config
+          printf "Host amocrm-server\n  HostName amo.ap-development.com\n  User deployer\n  IdentityFile ~/.ssh/id_ed25519\n  StrictHostKeyChecking no\n" >> ~/.ssh/config
 
       - name: Rsync sources
         run: |
