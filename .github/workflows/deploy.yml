@@ -2,28 +2,92 @@ name: Deploy amoapp
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main" ]      # авто-деплой в dev с main
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        type: choice
+        required: true
+        default: dev
+        options:
+          - dev
+          - staging
+          - prod
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Setup SSH key
+    # Выбираем окружение:
+    # - если ручной запуск — берём из inputs
+    # - если пуш в main — dev
+    environment: ${{ inputs.environment || 'dev' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read environment secrets/vars
+        id: cfg
+        shell: bash
+        run: |
+          # Извлекаем secrets/vars окружения (через контекст)
+          # Сохраняем в GITHUB_OUTPUT для удобства
+          echo "HOST=${{ secrets.HOST }}" >> $GITHUB_OUTPUT
+          echo "USER=${{ secrets.USER }}" >> $GITHUB_OUTPUT
+          echo "DEPLOY_DIR=${{ secrets.DEPLOY_DIR }}" >> $GITHUB_OUTPUT
+
+          # Vars опциональны — дадим значения по умолчанию
+          echo "SSH_PORT=${{ vars.SSH_PORT || '22' }}" >> $GITHUB_OUTPUT
+          echo "RSYNC_EXCLUDES=${{ vars.RSYNC_EXCLUDES || '.git,.github' }}" >> $GITHUB_OUTPUT
+
+      - name: Setup SSH
+        shell: bash
         run: |
           mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          # Приватный ключ деплой-пользователя
           echo "${{ secrets.SSH_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          printf "Host amocrm-server\n  HostName amo.ap-development.com\n  User deployer\n  IdentityFile ~/.ssh/id_ed25519\n  StrictHostKeyChecking no\n" >> ~/.ssh/config
+
+          # known_hosts — либо из секрета, либо вытягиваем сами
+          if [ -n "${{ secrets.KNOWN_HOSTS }}" ]; then
+            echo "${{ secrets.KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          else
+            ssh-keyscan -p "${{ steps.cfg.outputs.SSH_PORT }}" -H "${{ steps.cfg.outputs.HOST }}" > ~/.ssh/known_hosts 2>/dev/null
+          fi
+          chmod 644 ~/.ssh/known_hosts
+
+          # Блок в ~/.ssh/config — чтобы не повторяться в командах
+          {
+            echo "Host target"
+            echo "  HostName ${{ steps.cfg.outputs.HOST }}"
+            echo "  User ${{ steps.cfg.outputs.USER }}"
+            echo "  Port ${{ steps.cfg.outputs.SSH_PORT }}"
+            echo "  IdentityFile ~/.ssh/id_ed25519"
+            echo "  IdentitiesOnly yes"
+          } >> ~/.ssh/config
+          chmod 600 ~/.ssh/config
+
+      - name: Show target
+        run: |
+          echo "Deploying to ${{ steps.cfg.outputs.USER }}@${{ steps.cfg.outputs.HOST }}:${{ steps.cfg.outputs.DEPLOY_DIR }}"
+          echo "Environment: ${{ inputs.environment || 'dev' }}"
 
       - name: Rsync sources
+        shell: bash
         run: |
+          # Разворачиваем excludes в параметры --exclude
+          IFS=',' read -ra EXS <<< "${{ steps.cfg.outputs.RSYNC_EXCLUDES }}"
+          EX_ARGS=()
+          for e in "${EXS[@]}"; do EX_ARGS+=(--exclude "$e"); done
+
           rsync -az --delete \
-            --exclude '.git' \
-            --exclude '.github' \
-            ./ deployer@amo.ap-development.com:/opt/amoapp/
+            "${EX_ARGS[@]}" \
+            ./ target:"${{ steps.cfg.outputs.DEPLOY_DIR }}/"
 
       - name: Remote deploy script
         run: |
-          ssh amocrm-server "sudo /usr/local/bin/deploy_amoapp.sh"
+          ssh target "sudo /usr/local/bin/deploy_amoapp.sh"
