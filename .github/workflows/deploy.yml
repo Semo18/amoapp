@@ -2,7 +2,7 @@ name: Deploy amoapp
 
 on:
   push:
-    branches: [ "main" ]      # авто-деплой в dev с main
+    branches: [ "main" ]   # авто-деплой с main
   workflow_dispatch:
     inputs:
       environment:
@@ -10,19 +10,16 @@ on:
         type: choice
         required: true
         default: dev
-        options:
-          - dev
-          - staging
-          - prod
+        options: [ dev, staging, prod ]
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
-    # Выбираем окружение:
-    # - если ручной запуск — берём из inputs
-    # - если пуш в main — dev
+    # Если ручной запуск — берём из inputs, иначе dev
     environment: ${{ inputs.environment || 'dev' }}
+
+    env:
+      REMOTE_DIR: /var/www/app
 
     steps:
       - name: Checkout
@@ -32,27 +29,20 @@ jobs:
         id: cfg
         shell: bash
         run: |
-          # Извлекаем secrets/vars окружения (через контекст)
-          # Сохраняем в GITHUB_OUTPUT для удобства
-          echo "HOST=${{ secrets.HOST }}" >> $GITHUB_OUTPUT
-          echo "USER=${{ secrets.USER }}" >> $GITHUB_OUTPUT
-          echo "DEPLOY_DIR=${{ secrets.DEPLOY_DIR }}" >> $GITHUB_OUTPUT
-
-          # Vars опциональны — дадим значения по умолчанию
+          echo "HOST=${{ secrets.SSH_HOST }}" >> $GITHUB_OUTPUT        # 178.62.255.113 или домен
+          echo "USER=${{ secrets.SSH_USER }}" >> $GITHUB_OUTPUT        # deployer
           echo "SSH_PORT=${{ vars.SSH_PORT || '22' }}" >> $GITHUB_OUTPUT
-          echo "RSYNC_EXCLUDES=${{ vars.RSYNC_EXCLUDES || '.git,.github' }}" >> $GITHUB_OUTPUT
+          echo "RSYNC_EXCLUDES=${{ vars.RSYNC_EXCLUDES || '.git,.github,.DS_Store,.venv,*.log' }}" >> $GITHUB_OUTPUT
 
       - name: Setup SSH
         shell: bash
         run: |
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-
-          # Приватный ключ деплой-пользователя
+          set -e
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
           echo "${{ secrets.SSH_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
 
-          # known_hosts — либо из секрета, либо вытягиваем сами
+          # known_hosts: берём из секрета, либо собираем через ssh-keyscan
           if [ -n "${{ secrets.KNOWN_HOSTS }}" ]; then
             echo "${{ secrets.KNOWN_HOSTS }}" > ~/.ssh/known_hosts
           else
@@ -60,7 +50,6 @@ jobs:
           fi
           chmod 644 ~/.ssh/known_hosts
 
-          # Блок в ~/.ssh/config — чтобы не повторяться в командах
           {
             echo "Host target"
             echo "  HostName ${{ steps.cfg.outputs.HOST }}"
@@ -68,39 +57,51 @@ jobs:
             echo "  Port ${{ steps.cfg.outputs.SSH_PORT }}"
             echo "  IdentityFile ~/.ssh/id_ed25519"
             echo "  IdentitiesOnly yes"
+            echo "  StrictHostKeyChecking yes"
           } >> ~/.ssh/config
           chmod 600 ~/.ssh/config
 
       - name: Show target
         run: |
-          echo "Deploying to ${{ steps.cfg.outputs.USER }}@${{ steps.cfg.outputs.HOST }}:${{ steps.cfg.outputs.DEPLOY_DIR }}"
+          echo "Deploying to ${{ steps.cfg.outputs.USER }}@${{ steps.cfg.outputs.HOST }}:${{ env.REMOTE_DIR }}"
           echo "Environment: ${{ inputs.environment || 'dev' }}"
-      
-      - name: Debug SSH key (public part + SHA256)
-        run: |
-          set -e
-          echo "PUBLIC KEY FROM SECRET:"
-          ssh-keygen -y -f ~/.ssh/id_ed25519
-          echo "FINGERPRINT (SHA256):"
-          ssh-keygen -lf ~/.ssh/id_ed25519 -E sha256
 
       - name: SSH ping
-        run: |
-          ssh -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes target "echo OK && whoami && hostname"
+        run: ssh target "echo OK && whoami && hostname"
 
-
-      - name: Rsync sources
+      - name: Rsync sources (exclude .venv)
         shell: bash
         run: |
-          # Разворачиваем excludes в параметры --exclude
           IFS=',' read -ra EXS <<< "${{ steps.cfg.outputs.RSYNC_EXCLUDES }}"
           EX_ARGS=()
           for e in "${EXS[@]}"; do EX_ARGS+=(--exclude "$e"); done
 
-          rsync -az --delete \
+          rsync -azvv --itemize-changes --human-readable \
+            --delete \
+            --no-perms --no-owner --no-group --omit-dir-times \
             "${EX_ARGS[@]}" \
-            ./ target:"${{ steps.cfg.outputs.DEPLOY_DIR }}/"
+            -e "ssh" \
+            ./  target:"${{ env.REMOTE_DIR }}/"
 
-      - name: Remote deploy script
+      # Вариант A: post-deploy inline (простой и самодостаточный)
+      - name: Post-deploy (venv + deps + restart)
         run: |
-          ssh target "sudo /usr/local/bin/deploy_amoapp.sh"
+          ssh target '
+            set -euxo pipefail
+            cd "'"${REMOTE_DIR}"'"
+            # создаём/обновляем venv (без копирования через rsync)
+            python3 -m venv .venv || true
+            . .venv/bin/activate
+            python -m ensurepip --upgrade
+            # важно дергать pip ТОЛЬКО как "python -m pip" (обходит PEP 668)
+            python -m pip install --upgrade pip wheel || python -m pip install --upgrade pip wheel --break-system-packages
+            if [ -f requirements.txt ]; then
+              python -m pip install -r requirements.txt || python -m pip install -r requirements.txt --break-system-packages
+            fi
+            sudo /usr/bin/systemctl restart amoapp.service
+            sudo /usr/bin/systemctl status amoapp.service --no-pager | head -n 20 || true
+          '
+
+      # Вариант B (опционально): если захочешь вынос на серверный скрипт
+      # - name: Remote deploy script
+      #   run: ssh target "sudo /usr/local/bin/deploy_amoapp.sh"
