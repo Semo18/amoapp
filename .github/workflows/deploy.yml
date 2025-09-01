@@ -1,0 +1,29 @@
+name: Deploy amoapp
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf "Host amocrm-server\n  HostName amo.ap-development.com\n  User deployer\n  StrictHostKeyChecking no\n" >> ~/.ssh/config
+
+      - name: Rsync sources
+        run: |
+          rsync -az --delete \
+            --exclude '.git' \
+            --exclude '.github' \
+            ./ deployer@amo.ap-development.com:/opt/amoapp/
+
+      - name: Remote deploy script
+        run: |
+          ssh amocrm-server "sudo /usr/local/bin/deploy_amoapp.sh"
