@@ -2,7 +2,7 @@ name: Deploy amoapp
 
 on:
   push:
-    branches: ["main"]
+    branches: [ "main" ]
   workflow_dispatch:
     inputs:
       environment:
@@ -12,34 +12,39 @@ on:
         default: dev
         options: [dev, staging, prod]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-amoapp-${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'dev' }}
+  cancel-in-progress: true
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment || 'dev' }}
-
-    env:
-      REMOTE_DIR: /var/www/app
+    timeout-minutes: 15
+    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'dev' }}
 
     steps:
       - uses: actions/checkout@v4
 
-      # Проверяем, что заданы ключ и окруженческие переменные
       - name: Assert config
+        shell: bash
         run: |
+          set -euo pipefail
           [ -n "${{ secrets.SSH_KEY }}" ] || { echo "secrets.SSH_KEY is empty"; exit 1; }
           [ -n "${{ vars.DEPLOY_HOST }}" ] || { echo "vars.DEPLOY_HOST is empty"; exit 1; }
           [ -n "${{ vars.DEPLOY_USER }}" ] || { echo "vars.DEPLOY_USER is empty"; exit 1; }
-          [ -n "${{ vars.DEPLOY_DIR }}" ] || { echo "vars.DEPLOY_DIR is empty"; exit 1; }
+          [ -n "${{ vars.DEPLOY_DIR }}" ]  || { echo "vars.DEPLOY_DIR is empty";  exit 1; }
 
       - name: Setup SSH
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           printf '%s\n' "${{ secrets.SSH_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
 
-          # known_hosts (берём из секрета, иначе соберём сами)
           if [ -n "${{ secrets.KNOWN_HOSTS }}" ]; then
             printf '%s\n' "${{ secrets.KNOWN_HOSTS }}" > ~/.ssh/known_hosts
           else
@@ -61,7 +66,7 @@ jobs:
       - name: Show target
         run: |
           echo "Deploying to ${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}:${{ vars.DEPLOY_DIR }}"
-          echo "Environment: ${{ inputs.environment || 'dev' }}"
+          echo "Environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'dev' }}"
 
       - name: SSH ping
         run: ssh -o IdentitiesOnly=yes target "echo OK && whoami && hostname"
@@ -69,7 +74,8 @@ jobs:
       - name: Rsync sources (exclude .venv)
         shell: bash
         run: |
-          IFS=',' read -ra EXS <<< "${{ vars.RSYNC_EXCLUDES || '.git,.github,.DS_Store,.venv,*.log' }}"
+          set -euo pipefail
+          IFS=',' read -ra EXS <<< "${{ vars.RSYNC_EXCLUDES || '.git,.github,.DS_Store,.venv,*.log,__pycache__/,*.pyc,README.for.Me.md,.gitignore,gh_actions_amoapp,gh_actions_amoapp.pub,CHECKS.md,.env.example' }}"
           EX_ARGS=()
           for e in "${EXS[@]}"; do [ -n "$e" ] && EX_ARGS+=(--exclude "$e"); done
 
@@ -91,6 +97,20 @@ jobs:
             if [ -f requirements.txt ]; then
               python -m pip install -r requirements.txt || python -m pip install -r requirements.txt --break-system-packages
             fi
-            sudo /usr/bin/systemctl restart amoapp.service
-            sudo /usr/bin/systemctl status amoapp.service --no-pager | head -n 20 || true
+            sudo -n /usr/bin/systemctl restart amoapp.service
+            sudo -n /usr/bin/systemctl status amoapp.service --no-pager | head -n 20 || true
+          '"
+
+      - name: Health check
+        run: |
+          ssh -o IdentitiesOnly=yes target "bash -lc '
+            set -e
+            curl -fsS http://127.0.0.1:8000/health | sed -e \"s/.*/health OK: &/\"
+          '"
+
+      - name: Fetch logs on failure
+        if: failure()
+        run: |
+          ssh -o IdentitiesOnly=yes target "bash -lc '
+            sudo -n journalctl -xeu amoapp.service --no-pager | tail -n 200 || true
           '"
