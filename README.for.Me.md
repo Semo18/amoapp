@@ -31,3 +31,9 @@ gh variable list --env dev
 1. Убедись, что твой публичный ключ добавлен в /home/deployer/.ssh/authorized_keys.(CI-ключ там уже лежит, но можно добавить и твой личный).cat ~/.ssh/id_ed25519.pub | ssh root@amocrm-server "tee -a /home/deployer/.ssh/authorized_keys"
 2. 
 3. На своём Mac просто:ssh deployer@amocrm-server
+
+
+# Отправить проект в репозиторий: 
+git add .
+git commit -m 'workflow test' (в кавычках произвльное название)
+git push
