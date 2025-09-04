@@ -2,7 +2,7 @@
 import logging
 from typing import Optional
 
-from .constants import LOG_FORMAT, DEFAULT_LOG_LEVEL
+from .constants import DEFAULT_LOG_LEVEL, LOG_FORMAT
 
 
 def setup_logging(level_str: Optional[str] = None) -> None:
