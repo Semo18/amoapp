@@ -56,7 +56,7 @@ cat ~/.ssh/amoapp_imac (последнее имя нужного ключа)
 Зайти в config
 cat ~/.ssh/config
 
-# Команда коррекции 
+# Команда коррекции агента (пример)
 cat >> ~/.ssh/config <<'CFG'
 Host github-amoapp
   HostName github.com
@@ -65,3 +65,11 @@ Host github-amoapp
   AddKeysToAgent yes
   UseKeychain yes
   IdentitiesOnly yes
+
+
+# Работа с comfig (на сервере)
+Редактировать: 
+sudo nano /etc/amo-calc.env
+
+Проверить: 
+cat /etc/amo-calc.env
