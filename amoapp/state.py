@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-import time
 from typing import Optional
 
 from .constants import DEFAULT_OVERLAP_SEC
