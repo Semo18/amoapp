@@ -51,11 +51,10 @@ def load_env() -> EnvConfig:
     custom_raw = os.environ.get("CUSTOM_MAIN_BUDGET_ID", "").strip()
     lookback_raw = os.environ.get("WORKER_LOOKBACK_MIN", "")
     formula_type = os.environ.get("FORMULA_TYPE", "fixed_divisor").strip()
-    formula_divisor = _to_float(
-        os.environ.get("FORMULA_DIVISOR", str(DEFAULT_DIVISOR)) or
-        str(DEFAULT_DIVISOR),
-        DEFAULT_DIVISOR,
-    )
+    div_raw = os.environ.get("FORMULA_DIVISOR", str(DEFAULT_DIVISOR))
+    formula_divisor = _to_float(div_raw or str(DEFAULT_DIVISOR),
+                                DEFAULT_DIVISOR)
+
     formula_percent = _to_float(
         os.environ.get("FORMULA_PERCENT", "0") or "0", 0.0
     )

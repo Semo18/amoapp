@@ -115,11 +115,14 @@ jobs:
             sudo -n journalctl -xeu amoapp.service --no-pager | tail -n 200 || true
           '"
 
+      - name: Sort imports (isort)
+        run: |
+          python3 -m pip install isort
+          isort --check-only amoapp
+
       - name: Lint (flake8)
         run: |
-          python3 -m pip install flake8 isort
+          python3 -m pip install flake8
           flake8 amoapp
 
-      - name: Sort imports
-        run: isort --check-only amoapp
 
