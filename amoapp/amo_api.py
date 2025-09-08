@@ -12,11 +12,47 @@ class AmoApi:
         self.base = api_base.rstrip("/")
         self.http = HttpClient(token)
 
-    def fetch_updated_leads(self, since_unix: int) -> Iterator[Dict[str, Any]]:
+    # --- Pipelines ---------------------------------------------------------
+
+    def get_pipelines(self) -> Iterator[Dict[str, Any]]:
+        """Итератор по всем воронкам."""
+        url = f"{self.base}/leads/pipelines?limit=250"
+        while url:
+            data = self.http.get_json(url)
+            items = data.get("_embedded", {}).get("pipelines", []) or []
+            for p in items:
+                yield p
+            url = data.get("_links", {}).get("next", {}).get("href")
+
+    def resolve_pipeline_id(self, name: str) -> Optional[int]:
+        """По имени воронки вернуть её ID (или None)."""
+        name = (name or "").strip()
+        if not name:
+            return None
+        for p in self.get_pipelines():
+            if p.get("name") == name:
+                try:
+                    return int(p["id"])
+                except Exception:
+                    return None
+        return None
+
+    # --- Leads -------------------------------------------------------------
+
+    def fetch_updated_leads(
+        self,
+        since_unix: int,
+        pipeline_id: Optional[int] = None,
+    ) -> Iterator[Dict[str, Any]]:
+        """Сделки, обновлённые после since_unix, опционально по воронке."""
         url = (
-            f"{self.base}/leads?with=custom_fields_values&limit={LEADS_LIMIT}"
+            f"{self.base}/leads?with=custom_fields_values"
+            f"&limit={LEADS_LIMIT}"
             f"&filter[updated_at][from]={since_unix}"
         )
+        if pipeline_id:
+            url += f"&filter[pipeline_id][]={int(pipeline_id)}"
+
         while url:
             data = self.http.get_json(url)
             leads = data.get("_embedded", {}).get("leads", []) or []
@@ -26,6 +62,7 @@ class AmoApi:
 
     def patch_lead_fields(self, lead_id: int,
                           fields: Dict[int, Any]) -> None:
+        """Универсальный PATCH кастомных полей сделки."""
         cf_vals = []
         for fid, val in fields.items():
             cf_vals.append(
@@ -34,6 +71,8 @@ class AmoApi:
         payload = [{"id": int(lead_id), "custom_fields_values": cf_vals}]
         self.http.patch_json(f"{self.base}/leads", payload)
 
+
+# --- Helpers ---------------------------------------------------------------
 
 def first_cf_value(lead: Dict[str, Any], field_id: int) -> Optional[Any]:
     cfs = lead.get("custom_fields_values") or []

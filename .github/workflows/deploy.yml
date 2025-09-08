@@ -24,10 +24,36 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'dev' }}
-
     steps:
       - uses: actions/checkout@v4
 
+      # ① Сразу нормализуем .sh (LF) и проверим shebang/+x — до любых деплоев
+      - name: Normalize .sh line endings
+        run: |
+          find amoapp -name "*.sh" -exec sed -i 's/\r$//' {} \;
+
+      - name: Verify run_worker.sh
+        run: |
+          set -euo pipefail
+          head -n1 amoapp/run_worker.sh | grep -q '^#!' || \
+            (echo "Missing shebang in run_worker.sh" && exit 1)
+          # если хочешь не падать, а подправить — раскомментируй следующую строку:
+          # chmod +x amoapp/run_worker.sh
+          test -x amoapp/run_worker.sh || \
+            (echo "run_worker.sh is not executable. Run: git update-index --chmod=+x amoapp/run_worker.sh" && exit 1)
+
+      # ② Lint раньше деплоя — чтобы плохой код не уехал на сервер
+      - name: Sort imports (isort)
+        run: |
+          python3 -m pip install isort
+          isort --check-only amoapp
+
+      - name: Lint (flake8)
+        run: |
+          python3 -m pip install flake8
+          flake8 amoapp
+
+      # ③ Дальше — проверка переменных, SSH, rsync и рестарт
       - name: Assert config
         shell: bash
         run: |
@@ -79,6 +105,7 @@ jobs:
           EX_ARGS=()
           for e in "${EXS[@]}"; do [ -n "$e" ] && EX_ARGS+=(--exclude "$e"); done
 
+          # если хочешь гарантировать +x на сервере — можно добавить --chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r
           rsync -azvv --itemize-changes --human-readable --delete \
             --no-perms --no-owner --no-group --omit-dir-times \
             "${EX_ARGS[@]}" \
@@ -97,8 +124,16 @@ jobs:
             if [ -f requirements.txt ]; then
               python -m pip install -r requirements.txt || python -m pip install -r requirements.txt --break-system-packages
             fi
-            sudo -n /usr/bin/systemctl restart amoapp.service
-            sudo -n /usr/bin/systemctl status amoapp.service --no-pager | head -n 20 || true
+
+            # страховка на сервере: LF и права у скрипта
+            sed -i \"s/\r$//\" amoapp/run_worker.sh || true
+            chmod 755 amoapp/run_worker.sh || true
+
+            sudo -n systemctl daemon-reload
+            sudo -n systemctl restart amoapp.service
+            # перезапустим таймер, чтобы график обновился
+            sudo -n systemctl restart amoapp-worker.timer
+            sudo -n systemctl status amoapp.service --no-pager | head -n 20 || true
           '"
 
       - name: Health check
@@ -108,21 +143,12 @@ jobs:
             curl -fsS http://127.0.0.1:8000/health | sed -e \"s/.*/health OK: &/\"
           '"
 
+      # Логи при фейле — и веб, и воркер
       - name: Fetch logs on failure
         if: failure()
         run: |
           ssh -o IdentitiesOnly=yes target "bash -lc '
             sudo -n journalctl -xeu amoapp.service --no-pager | tail -n 200 || true
+            echo \"---\"
+            sudo -n journalctl -xeu amoapp-worker.service --no-pager | tail -n 200 || true
           '"
-
-      - name: Sort imports (isort)
-        run: |
-          python3 -m pip install isort
-          isort --check-only amoapp
-
-      - name: Lint (flake8)
-        run: |
-          python3 -m pip install flake8
-          flake8 amoapp
-
-

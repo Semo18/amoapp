@@ -23,6 +23,8 @@ class EnvConfig:
     formula_divisor: float
     formula_percent: float
     state_path: str
+    pipeline_id: Optional[int]
+    pipeline_name: Optional[str]
 
 
 def _to_int(val: str, default: int) -> int:
@@ -47,18 +49,31 @@ def _to_opt_int(val: str) -> Optional[int]:
 def load_env() -> EnvConfig:
     domain = os.environ.get("AMO_DOMAIN", "").strip()
     token = os.environ.get("AMO_TOKEN", "").strip()
+
     field_raw = os.environ.get("FIELD_INSTALLMENT_ID", "0")
     custom_raw = os.environ.get("CUSTOM_MAIN_BUDGET_ID", "").strip()
     lookback_raw = os.environ.get("WORKER_LOOKBACK_MIN", "")
-    formula_type = os.environ.get("FORMULA_TYPE", "fixed_divisor").strip()
+
+    formula_type = (
+        os.environ.get("FORMULA_TYPE", "fixed_divisor").strip()
+    )
+
     div_raw = os.environ.get("FORMULA_DIVISOR", str(DEFAULT_DIVISOR))
-    formula_divisor = _to_float(div_raw or str(DEFAULT_DIVISOR),
-                                DEFAULT_DIVISOR)
+    formula_divisor = _to_float(
+        div_raw or str(DEFAULT_DIVISOR), DEFAULT_DIVISOR
+    )
 
     formula_percent = _to_float(
         os.environ.get("FORMULA_PERCENT", "0") or "0", 0.0
     )
+
     state_path = os.environ.get("STATE_PATH", DEFAULT_STATE_PATH)
+
+    # Новые переменные для фильтрации по воронке
+    pipeline_id = _to_opt_int(os.environ.get("PIPELINE_ID", ""))
+    pipeline_name = (
+        os.environ.get("PIPELINE_NAME", "") or ""
+    ).strip() or None
 
     if not domain:
         raise SystemExit("AMO_DOMAIN is required")
@@ -70,8 +85,9 @@ def load_env() -> EnvConfig:
         raise SystemExit("FIELD_INSTALLMENT_ID is required")
 
     custom_id = _to_opt_int(custom_raw)
-    lookback_min = _to_int(lookback_raw or str(DEFAULT_LOOKBACK_MIN),
-                           DEFAULT_LOOKBACK_MIN)
+    lookback_min = _to_int(
+        lookback_raw or str(DEFAULT_LOOKBACK_MIN), DEFAULT_LOOKBACK_MIN
+    )
 
     api_base = f"https://{domain}{API_PATH}"
 
@@ -86,4 +102,6 @@ def load_env() -> EnvConfig:
         formula_divisor=formula_divisor,
         formula_percent=formula_percent,
         state_path=state_path,
+        pipeline_id=pipeline_id,
+        pipeline_name=pipeline_name,
     )

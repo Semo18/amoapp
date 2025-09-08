@@ -73,3 +73,40 @@ sudo nano /etc/amo-calc.env
 
 Проверить: 
 cat /etc/amo-calc.env
+
+
+# РАБОТА НА СЕРВЕРЕ
+Проверить содержимое на сервере 
+# где наш код:
+ls -la /var/www/app
+ls -la /var/www/app/amoapp
+
+# кто владелец:
+stat /var/www/app/amoapp/run_worker.sh
+
+# Перезагрузить сервис
+sudo systemctl restart amoapp.service (это именно калькулятор рассрочки)
+
+
+
+# В ПРОЕКТЕ 
+Посмотреть таймер 
+systemctl list-timers | grep amoapp-worker || true
+
+# Как узнать PIPELINE_ID (ID воронки)
+
+На сервере уже есть токен и домен — просто выпишем все воронки и отфильтруем по имени:
+
+set -a; source /etc/amo-calc.env; set +a
+
+# посмотреть все воронки (id + name)
+curl -s -H "Authorization: Bearer $AMO_TOKEN" \
+  "https://$AMO_DOMAIN/api/v4/leads/pipelines?limit=250" \
+| jq '._embedded.pipelines[] | {id, name}'
+
+# вытащить ID нужной воронки по точному имени
+curl -s -H "Authorization: Bearer $AMO_TOKEN" \
+  "https://$AMO_DOMAIN/api/v4/leads/pipelines?limit=250" \
+| jq -r '._embedded.pipelines[]
+         | select(.name=="Рассрочка Москва (МО)") | .id'
+

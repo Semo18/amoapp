@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import json
 import time
+from dataclasses import replace
 from typing import Any, Dict, Optional, Tuple
 
 from .amo_api import (
@@ -18,9 +19,24 @@ log = get_logger("amo-calc")
 
 
 def init_env_api() -> Tuple[EnvConfig, AmoApi]:
+    """Инициализация окружения и API.
+    Если pipeline_id не задан, но задано имя, резолвим его один раз.
+    """
     env = load_env()
     setup_logging(None)
     api = AmoApi(api_base=env.api_base, token=env.token)
+
+    if env.pipeline_id is None and env.pipeline_name:
+        pid = api.resolve_pipeline_id(env.pipeline_name)
+        if not pid:
+            raise SystemExit(
+                f"Pipeline '{env.pipeline_name}' not found"
+            )
+        env = replace(env, pipeline_id=pid)
+
+    if env.pipeline_id:
+        log.info("active pipeline filter: id=%s", env.pipeline_id)
+
     return env, api
 
 
@@ -42,7 +58,9 @@ def process_once(
     max_seen = 0
     errors = 0
 
-    for lead in api.fetch_updated_leads(since):
+    for lead in api.fetch_updated_leads(
+        since, pipeline_id=env.pipeline_id
+    ):
         scanned += 1
         lead_id = int(lead.get("id"))
         max_seen = max(max_seen, int(lead.get("updated_at", now)))
@@ -86,6 +104,7 @@ def process_once(
         "errors": errors,
         "since_unix": since,
         "saved_last_success": new_last,
+        "pipeline_id": env.pipeline_id,
     }
     log.info("run stats: %s", json.dumps(stats, ensure_ascii=False))
     return stats

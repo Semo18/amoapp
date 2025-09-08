@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import datetime as dt
 import os
-from typing import Any
+from typing import Any, Dict
 
 from flask import Flask, jsonify, request
 
@@ -17,11 +17,21 @@ app = Flask(__name__)
 
 @app.get("/health")
 def health() -> Any:
-    return jsonify(
-        ok=True,
-        ts=dt.datetime.utcnow().isoformat(),
-        domain=ENV.domain,
-    )
+    cfg: Dict[str, Any] = {
+        "domain": ENV.domain,
+        "pipeline_id": ENV.pipeline_id,
+        "pipeline_name": ENV.pipeline_name,
+        # ниже — не секреты, полезно для отладки
+        "field_installment_id": ENV.field_installment_id,
+        "source_budget_field_id": ENV.custom_main_budget_id,
+        "lookback_min": ENV.lookback_min,
+        "formula": {
+            "type": ENV.formula_type,
+            "divisor": ENV.formula_divisor,
+            "percent": ENV.formula_percent,
+        },
+    }
+    return jsonify(ok=True, ts=dt.datetime.utcnow().isoformat(), **cfg)
 
 
 def _token_ok() -> bool:

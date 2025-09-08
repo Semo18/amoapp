@@ -1,0 +1,641 @@
+[
+    {
+        "label": "math",
+        "kind": 6,
+        "isExtraImport": true,
+        "importPath": "math",
+        "description": "math",
+        "detail": "math",
+        "documentation": {}
+    },
+    {
+        "label": "Any",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Dict",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Iterator",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Optional",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Any",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Optional",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Any",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Dict",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Optional",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Optional",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Optional",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Any",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Optional",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Any",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Dict",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Optional",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "Tuple",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
+        "label": "datetime",
+        "kind": 6,
+        "isExtraImport": true,
+        "importPath": "datetime",
+        "description": "datetime",
+        "detail": "datetime",
+        "documentation": {}
+    },
+    {
+        "label": "os",
+        "kind": 6,
+        "isExtraImport": true,
+        "importPath": "os",
+        "description": "os",
+        "detail": "os",
+        "documentation": {}
+    },
+    {
+        "label": "Flask",
+        "importPath": "flask",
+        "description": "flask",
+        "isExtraImport": true,
+        "detail": "flask",
+        "documentation": {}
+    },
+    {
+        "label": "jsonify",
+        "importPath": "flask",
+        "description": "flask",
+        "isExtraImport": true,
+        "detail": "flask",
+        "documentation": {}
+    },
+    {
+        "label": "request",
+        "importPath": "flask",
+        "description": "flask",
+        "isExtraImport": true,
+        "detail": "flask",
+        "documentation": {}
+    },
+    {
+        "label": "Flask",
+        "importPath": "flask",
+        "description": "flask",
+        "isExtraImport": true,
+        "detail": "flask",
+        "documentation": {}
+    },
+    {
+        "label": "jsonify",
+        "importPath": "flask",
+        "description": "flask",
+        "isExtraImport": true,
+        "detail": "flask",
+        "documentation": {}
+    },
+    {
+        "label": "dataclass",
+        "importPath": "dataclasses",
+        "description": "dataclasses",
+        "isExtraImport": true,
+        "detail": "dataclasses",
+        "documentation": {}
+    },
+    {
+        "label": "requests",
+        "kind": 6,
+        "isExtraImport": true,
+        "importPath": "requests",
+        "description": "requests",
+        "detail": "requests",
+        "documentation": {}
+    },
+    {
+        "label": "retry",
+        "importPath": "tenacity",
+        "description": "tenacity",
+        "isExtraImport": true,
+        "detail": "tenacity",
+        "documentation": {}
+    },
+    {
+        "label": "retry_if_exception_type",
+        "importPath": "tenacity",
+        "description": "tenacity",
+        "isExtraImport": true,
+        "detail": "tenacity",
+        "documentation": {}
+    },
+    {
+        "label": "stop_after_attempt",
+        "importPath": "tenacity",
+        "description": "tenacity",
+        "isExtraImport": true,
+        "detail": "tenacity",
+        "documentation": {}
+    },
+    {
+        "label": "wait_exponential",
+        "importPath": "tenacity",
+        "description": "tenacity",
+        "isExtraImport": true,
+        "detail": "tenacity",
+        "documentation": {}
+    },
+    {
+        "label": "logging",
+        "kind": 6,
+        "isExtraImport": true,
+        "importPath": "logging",
+        "description": "logging",
+        "detail": "logging",
+        "documentation": {}
+    },
+    {
+        "label": "json",
+        "kind": 6,
+        "isExtraImport": true,
+        "importPath": "json",
+        "description": "json",
+        "detail": "json",
+        "documentation": {}
+    },
+    {
+        "label": "tempfile",
+        "kind": 6,
+        "isExtraImport": true,
+        "importPath": "tempfile",
+        "description": "tempfile",
+        "detail": "tempfile",
+        "documentation": {}
+    },
+    {
+        "label": "time",
+        "kind": 6,
+        "isExtraImport": true,
+        "importPath": "time",
+        "description": "time",
+        "detail": "time",
+        "documentation": {}
+    },
+    {
+        "label": "AmoApi",
+        "kind": 6,
+        "importPath": "amoapp.amo_api",
+        "description": "amoapp.amo_api",
+        "peekOfCode": "class AmoApi:\n    def __init__(self, api_base: str, token: str) -> None:\n        self.base = api_base.rstrip(\"/\")\n        self.http = HttpClient(token)\n    def fetch_updated_leads(self, since_unix: int) -> Iterator[Dict[str, Any]]:\n        url = (\n            f\"{self.base}/leads?with=custom_fields_values&limit={LEADS_LIMIT}\"\n            f\"&filter[updated_at][from]={since_unix}\"\n        )\n        while url:",
+        "detail": "amoapp.amo_api",
+        "documentation": {}
+    },
+    {
+        "label": "first_cf_value",
+        "kind": 2,
+        "importPath": "amoapp.amo_api",
+        "description": "amoapp.amo_api",
+        "peekOfCode": "def first_cf_value(lead: Dict[str, Any], field_id: int) -> Optional[Any]:\n    cfs = lead.get(\"custom_fields_values\") or []\n    for cf in cfs:\n        if cf.get(\"field_id\") == field_id:\n            vals = cf.get(\"values\") or []\n            if vals:\n                return vals[0].get(\"value\")\n    return None\ndef lead_budget(\n    lead: Dict[str, Any],",
+        "detail": "amoapp.amo_api",
+        "documentation": {}
+    },
+    {
+        "label": "lead_budget",
+        "kind": 2,
+        "importPath": "amoapp.amo_api",
+        "description": "amoapp.amo_api",
+        "peekOfCode": "def lead_budget(\n    lead: Dict[str, Any],\n    custom_main_budget_id: Optional[int],\n) -> float:\n    raw = (first_cf_value(lead, custom_main_budget_id)\n           if custom_main_budget_id else lead.get(\"price\"))\n    return to_float(raw, 0.0)\ndef calc_installment(\n    budget: float,\n    formula_type: str,",
+        "detail": "amoapp.amo_api",
+        "documentation": {}
+    },
+    {
+        "label": "calc_installment",
+        "kind": 2,
+        "importPath": "amoapp.amo_api",
+        "description": "amoapp.amo_api",
+        "peekOfCode": "def calc_installment(\n    budget: float,\n    formula_type: str,\n    divisor: float,\n    percent: float,\n) -> int:\n    if budget <= 0:\n        return 0\n    if formula_type == \"fixed_divisor\":\n        d = divisor if divisor and divisor > 0 else DEFAULT_DIVISOR",
+        "detail": "amoapp.amo_api",
+        "documentation": {}
+    },
+    {
+        "label": "to_int_safe",
+        "kind": 2,
+        "importPath": "amoapp.amo_api",
+        "description": "amoapp.amo_api",
+        "peekOfCode": "def to_int_safe(value: Any) -> int:\n    return to_int(value, 0)",
+        "detail": "amoapp.amo_api",
+        "documentation": {}
+    },
+    {
+        "label": "health",
+        "kind": 2,
+        "importPath": "amoapp.app",
+        "description": "amoapp.app",
+        "peekOfCode": "def health() -> Any:\n    return jsonify(\n        ok=True,\n        ts=dt.datetime.utcnow().isoformat(),\n        domain=ENV.domain,\n    )\ndef _token_ok() -> bool:\n    # Если RUN_TOKEN не задан, доступ открыт (как раньше).\n    if not RUN_TOKEN:\n        return True",
+        "detail": "amoapp.app",
+        "documentation": {}
+    },
+    {
+        "label": "run_once",
+        "kind": 2,
+        "importPath": "amoapp.app",
+        "description": "amoapp.app",
+        "peekOfCode": "def run_once() -> Any:\n    if not _token_ok():\n        return jsonify(ok=False, error=\"forbidden\"), 403\n    stats = process_once(ENV, API)\n    return jsonify(ok=True, **stats)",
+        "detail": "amoapp.app",
+        "documentation": {}
+    },
+    {
+        "label": "RUN_TOKEN",
+        "kind": 5,
+        "importPath": "amoapp.app",
+        "description": "amoapp.app",
+        "peekOfCode": "RUN_TOKEN = os.environ.get(\"RUN_TOKEN\", \"\").strip()\napp = Flask(__name__)\n@app.get(\"/health\")\ndef health() -> Any:\n    return jsonify(\n        ok=True,\n        ts=dt.datetime.utcnow().isoformat(),\n        domain=ENV.domain,\n    )\ndef _token_ok() -> bool:",
+        "detail": "amoapp.app",
+        "documentation": {}
+    },
+    {
+        "label": "app",
+        "kind": 5,
+        "importPath": "amoapp.app",
+        "description": "amoapp.app",
+        "peekOfCode": "app = Flask(__name__)\n@app.get(\"/health\")\ndef health() -> Any:\n    return jsonify(\n        ok=True,\n        ts=dt.datetime.utcnow().isoformat(),\n        domain=ENV.domain,\n    )\ndef _token_ok() -> bool:\n    # Если RUN_TOKEN не задан, доступ открыт (как раньше).",
+        "detail": "amoapp.app",
+        "documentation": {}
+    },
+    {
+        "label": "LOG_FORMAT",
+        "kind": 5,
+        "importPath": "amoapp.constants",
+        "description": "amoapp.constants",
+        "peekOfCode": "LOG_FORMAT = \"%(asctime)s | %(levelname)s | %(message)s\"\nDEFAULT_LOG_LEVEL = \"INFO\"\n# API / сеть\nAPI_PATH = \"/api/v4\"\nLEADS_LIMIT = 250\nSESSION_TIMEOUT = 30  # seconds\nRETRY_STATUS_CODES = {429, 500, 502, 503, 504}\n# Формулы\nDEFAULT_DIVISOR = 12.0\nDEFAULT_LOOKBACK_MIN = 10",
+        "detail": "amoapp.constants",
+        "documentation": {}
+    },
+    {
+        "label": "DEFAULT_LOG_LEVEL",
+        "kind": 5,
+        "importPath": "amoapp.constants",
+        "description": "amoapp.constants",
+        "peekOfCode": "DEFAULT_LOG_LEVEL = \"INFO\"\n# API / сеть\nAPI_PATH = \"/api/v4\"\nLEADS_LIMIT = 250\nSESSION_TIMEOUT = 30  # seconds\nRETRY_STATUS_CODES = {429, 500, 502, 503, 504}\n# Формулы\nDEFAULT_DIVISOR = 12.0\nDEFAULT_LOOKBACK_MIN = 10\nDEFAULT_OVERLAP_SEC = 60  # «подклейка» при чтении last_since",
+        "detail": "amoapp.constants",
+        "documentation": {}
+    },
+    {
+        "label": "API_PATH",
+        "kind": 5,
+        "importPath": "amoapp.constants",
+        "description": "amoapp.constants",
+        "peekOfCode": "API_PATH = \"/api/v4\"\nLEADS_LIMIT = 250\nSESSION_TIMEOUT = 30  # seconds\nRETRY_STATUS_CODES = {429, 500, 502, 503, 504}\n# Формулы\nDEFAULT_DIVISOR = 12.0\nDEFAULT_LOOKBACK_MIN = 10\nDEFAULT_OVERLAP_SEC = 60  # «подклейка» при чтении last_since\n# Состояние воркера (файл с last_success_updated_at)\nDEFAULT_STATE_PATH = \"/var/www/app/.state/last_since.json\"",
+        "detail": "amoapp.constants",
+        "documentation": {}
+    },
+    {
+        "label": "LEADS_LIMIT",
+        "kind": 5,
+        "importPath": "amoapp.constants",
+        "description": "amoapp.constants",
+        "peekOfCode": "LEADS_LIMIT = 250\nSESSION_TIMEOUT = 30  # seconds\nRETRY_STATUS_CODES = {429, 500, 502, 503, 504}\n# Формулы\nDEFAULT_DIVISOR = 12.0\nDEFAULT_LOOKBACK_MIN = 10\nDEFAULT_OVERLAP_SEC = 60  # «подклейка» при чтении last_since\n# Состояние воркера (файл с last_success_updated_at)\nDEFAULT_STATE_PATH = \"/var/www/app/.state/last_since.json\"",
+        "detail": "amoapp.constants",
+        "documentation": {}
+    },
+    {
+        "label": "SESSION_TIMEOUT",
+        "kind": 5,
+        "importPath": "amoapp.constants",
+        "description": "amoapp.constants",
+        "peekOfCode": "SESSION_TIMEOUT = 30  # seconds\nRETRY_STATUS_CODES = {429, 500, 502, 503, 504}\n# Формулы\nDEFAULT_DIVISOR = 12.0\nDEFAULT_LOOKBACK_MIN = 10\nDEFAULT_OVERLAP_SEC = 60  # «подклейка» при чтении last_since\n# Состояние воркера (файл с last_success_updated_at)\nDEFAULT_STATE_PATH = \"/var/www/app/.state/last_since.json\"",
+        "detail": "amoapp.constants",
+        "documentation": {}
+    },
+    {
+        "label": "RETRY_STATUS_CODES",
+        "kind": 5,
+        "importPath": "amoapp.constants",
+        "description": "amoapp.constants",
+        "peekOfCode": "RETRY_STATUS_CODES = {429, 500, 502, 503, 504}\n# Формулы\nDEFAULT_DIVISOR = 12.0\nDEFAULT_LOOKBACK_MIN = 10\nDEFAULT_OVERLAP_SEC = 60  # «подклейка» при чтении last_since\n# Состояние воркера (файл с last_success_updated_at)\nDEFAULT_STATE_PATH = \"/var/www/app/.state/last_since.json\"",
+        "detail": "amoapp.constants",
+        "documentation": {}
+    },
+    {
+        "label": "DEFAULT_DIVISOR",
+        "kind": 5,
+        "importPath": "amoapp.constants",
+        "description": "amoapp.constants",
+        "peekOfCode": "DEFAULT_DIVISOR = 12.0\nDEFAULT_LOOKBACK_MIN = 10\nDEFAULT_OVERLAP_SEC = 60  # «подклейка» при чтении last_since\n# Состояние воркера (файл с last_success_updated_at)\nDEFAULT_STATE_PATH = \"/var/www/app/.state/last_since.json\"",
+        "detail": "amoapp.constants",
+        "documentation": {}
+    },
+    {
+        "label": "DEFAULT_LOOKBACK_MIN",
+        "kind": 5,
+        "importPath": "amoapp.constants",
+        "description": "amoapp.constants",
+        "peekOfCode": "DEFAULT_LOOKBACK_MIN = 10\nDEFAULT_OVERLAP_SEC = 60  # «подклейка» при чтении last_since\n# Состояние воркера (файл с last_success_updated_at)\nDEFAULT_STATE_PATH = \"/var/www/app/.state/last_since.json\"",
+        "detail": "amoapp.constants",
+        "documentation": {}
+    },
+    {
+        "label": "DEFAULT_OVERLAP_SEC",
+        "kind": 5,
+        "importPath": "amoapp.constants",
+        "description": "amoapp.constants",
+        "peekOfCode": "DEFAULT_OVERLAP_SEC = 60  # «подклейка» при чтении last_since\n# Состояние воркера (файл с last_success_updated_at)\nDEFAULT_STATE_PATH = \"/var/www/app/.state/last_since.json\"",
+        "detail": "amoapp.constants",
+        "documentation": {}
+    },
+    {
+        "label": "DEFAULT_STATE_PATH",
+        "kind": 5,
+        "importPath": "amoapp.constants",
+        "description": "amoapp.constants",
+        "peekOfCode": "DEFAULT_STATE_PATH = \"/var/www/app/.state/last_since.json\"",
+        "detail": "amoapp.constants",
+        "documentation": {}
+    },
+    {
+        "label": "EnvConfig",
+        "kind": 6,
+        "importPath": "amoapp.env",
+        "description": "amoapp.env",
+        "peekOfCode": "class EnvConfig:\n    domain: str\n    api_base: str\n    token: str\n    field_installment_id: int\n    custom_main_budget_id: Optional[int]\n    lookback_min: int\n    formula_type: str\n    formula_divisor: float\n    formula_percent: float",
+        "detail": "amoapp.env",
+        "documentation": {}
+    },
+    {
+        "label": "load_env",
+        "kind": 2,
+        "importPath": "amoapp.env",
+        "description": "amoapp.env",
+        "peekOfCode": "def load_env() -> EnvConfig:\n    domain = os.environ.get(\"AMO_DOMAIN\", \"\").strip()\n    token = os.environ.get(\"AMO_TOKEN\", \"\").strip()\n    field_raw = os.environ.get(\"FIELD_INSTALLMENT_ID\", \"0\")\n    custom_raw = os.environ.get(\"CUSTOM_MAIN_BUDGET_ID\", \"\").strip()\n    lookback_raw = os.environ.get(\"WORKER_LOOKBACK_MIN\", \"\")\n    formula_type = os.environ.get(\"FORMULA_TYPE\", \"fixed_divisor\").strip()\n    div_raw = os.environ.get(\"FORMULA_DIVISOR\", str(DEFAULT_DIVISOR))\n    formula_divisor = _to_float(div_raw or str(DEFAULT_DIVISOR),\n                                DEFAULT_DIVISOR)",
+        "detail": "amoapp.env",
+        "documentation": {}
+    },
+    {
+        "label": "AmoHttpError",
+        "kind": 6,
+        "importPath": "amoapp.http_client",
+        "description": "amoapp.http_client",
+        "peekOfCode": "class AmoHttpError(Exception):\n    \"\"\"Ошибки, которые должны ретраиться.\"\"\"\nclass HttpClient:\n    def __init__(self, token: str) -> None:\n        self._s = requests.Session()\n        self._s.headers.update(\n            {\n                \"Authorization\": f\"Bearer {token}\",\n                \"Content-Type\": \"application/json\",\n                \"Accept\": \"application/json\",",
+        "detail": "amoapp.http_client",
+        "documentation": {}
+    },
+    {
+        "label": "HttpClient",
+        "kind": 6,
+        "importPath": "amoapp.http_client",
+        "description": "amoapp.http_client",
+        "peekOfCode": "class HttpClient:\n    def __init__(self, token: str) -> None:\n        self._s = requests.Session()\n        self._s.headers.update(\n            {\n                \"Authorization\": f\"Bearer {token}\",\n                \"Content-Type\": \"application/json\",\n                \"Accept\": \"application/json\",\n            }\n        )",
+        "detail": "amoapp.http_client",
+        "documentation": {}
+    },
+    {
+        "label": "setup_logging",
+        "kind": 2,
+        "importPath": "amoapp.logging_conf",
+        "description": "amoapp.logging_conf",
+        "peekOfCode": "def setup_logging(level_str: Optional[str] = None) -> None:\n    level = (level_str or DEFAULT_LOG_LEVEL).upper()\n    logging.basicConfig(level=level, format=LOG_FORMAT)\ndef get_logger(name: str) -> logging.Logger:\n    return logging.getLogger(name)",
+        "detail": "amoapp.logging_conf",
+        "documentation": {}
+    },
+    {
+        "label": "get_logger",
+        "kind": 2,
+        "importPath": "amoapp.logging_conf",
+        "description": "amoapp.logging_conf",
+        "peekOfCode": "def get_logger(name: str) -> logging.Logger:\n    return logging.getLogger(name)",
+        "detail": "amoapp.logging_conf",
+        "documentation": {}
+    },
+    {
+        "label": "read_last_success",
+        "kind": 2,
+        "importPath": "amoapp.state",
+        "description": "amoapp.state",
+        "peekOfCode": "def read_last_success(path: str) -> Optional[int]:\n    data = read_json(path)\n    try:\n        v = int(data.get(\"last_success_updated_at\")) if data else None\n        return v if v and v > 0 else None\n    except Exception:\n        return None\ndef write_last_success(path: str, ts: int) -> None:\n    atomic_write_json(path, {\"last_success_updated_at\": int(ts)})\ndef compute_since(",
+        "detail": "amoapp.state",
+        "documentation": {}
+    },
+    {
+        "label": "write_last_success",
+        "kind": 2,
+        "importPath": "amoapp.state",
+        "description": "amoapp.state",
+        "peekOfCode": "def write_last_success(path: str, ts: int) -> None:\n    atomic_write_json(path, {\"last_success_updated_at\": int(ts)})\ndef compute_since(\n    now_unix: int,\n    lookback_min: int,\n    last_success: Optional[int],\n    overlap_sec: int = DEFAULT_OVERLAP_SEC,\n) -> int:\n    fallback = now_unix - lookback_min * 60\n    if not last_success:",
+        "detail": "amoapp.state",
+        "documentation": {}
+    },
+    {
+        "label": "compute_since",
+        "kind": 2,
+        "importPath": "amoapp.state",
+        "description": "amoapp.state",
+        "peekOfCode": "def compute_since(\n    now_unix: int,\n    lookback_min: int,\n    last_success: Optional[int],\n    overlap_sec: int = DEFAULT_OVERLAP_SEC,\n) -> int:\n    fallback = now_unix - lookback_min * 60\n    if not last_success:\n        return max(0, fallback)\n    candidate = max(0, last_success - overlap_sec)",
+        "detail": "amoapp.state",
+        "documentation": {}
+    },
+    {
+        "label": "to_int",
+        "kind": 2,
+        "importPath": "amoapp.utils",
+        "description": "amoapp.utils",
+        "peekOfCode": "def to_int(value: Any, default: int = 0) -> int:\n    try:\n        return int(float(value))\n    except Exception:\n        return default\ndef to_float(value: Any, default: float = 0.0) -> float:\n    try:\n        return float(value)\n    except Exception:\n        return default",
+        "detail": "amoapp.utils",
+        "documentation": {}
+    },
+    {
+        "label": "to_float",
+        "kind": 2,
+        "importPath": "amoapp.utils",
+        "description": "amoapp.utils",
+        "peekOfCode": "def to_float(value: Any, default: float = 0.0) -> float:\n    try:\n        return float(value)\n    except Exception:\n        return default\ndef ensure_dir(path: str) -> None:\n    d = os.path.dirname(path)\n    if d and not os.path.isdir(d):\n        os.makedirs(d, exist_ok=True)\ndef read_json(path: str) -> Optional[dict]:",
+        "detail": "amoapp.utils",
+        "documentation": {}
+    },
+    {
+        "label": "ensure_dir",
+        "kind": 2,
+        "importPath": "amoapp.utils",
+        "description": "amoapp.utils",
+        "peekOfCode": "def ensure_dir(path: str) -> None:\n    d = os.path.dirname(path)\n    if d and not os.path.isdir(d):\n        os.makedirs(d, exist_ok=True)\ndef read_json(path: str) -> Optional[dict]:\n    try:\n        with open(path, \"r\", encoding=\"utf-8\") as f:\n            return json.load(f)\n    except Exception:\n        return None",
+        "detail": "amoapp.utils",
+        "documentation": {}
+    },
+    {
+        "label": "read_json",
+        "kind": 2,
+        "importPath": "amoapp.utils",
+        "description": "amoapp.utils",
+        "peekOfCode": "def read_json(path: str) -> Optional[dict]:\n    try:\n        with open(path, \"r\", encoding=\"utf-8\") as f:\n            return json.load(f)\n    except Exception:\n        return None\ndef atomic_write_json(path: str, data: dict) -> None:\n    ensure_dir(path)\n    d = os.path.dirname(path) or \".\"\n    fd, tmp_path = tempfile.mkstemp(prefix=\".tmp_\", dir=d)",
+        "detail": "amoapp.utils",
+        "documentation": {}
+    },
+    {
+        "label": "atomic_write_json",
+        "kind": 2,
+        "importPath": "amoapp.utils",
+        "description": "amoapp.utils",
+        "peekOfCode": "def atomic_write_json(path: str, data: dict) -> None:\n    ensure_dir(path)\n    d = os.path.dirname(path) or \".\"\n    fd, tmp_path = tempfile.mkstemp(prefix=\".tmp_\", dir=d)\n    try:\n        with os.fdopen(fd, \"w\", encoding=\"utf-8\") as f:\n            json.dump(data, f, ensure_ascii=False)\n            f.flush()\n            os.fsync(f.fileno())\n        os.replace(tmp_path, path)",
+        "detail": "amoapp.utils",
+        "documentation": {}
+    },
+    {
+        "label": "init_env_api",
+        "kind": 2,
+        "importPath": "amoapp.worker",
+        "description": "amoapp.worker",
+        "peekOfCode": "def init_env_api() -> Tuple[EnvConfig, AmoApi]:\n    env = load_env()\n    setup_logging(None)\n    api = AmoApi(api_base=env.api_base, token=env.token)\n    return env, api\ndef process_once(\n    env: EnvConfig,\n    api: AmoApi,\n    minutes_back: Optional[int] = None,\n) -> Dict[str, Any]:",
+        "detail": "amoapp.worker",
+        "documentation": {}
+    },
+    {
+        "label": "process_once",
+        "kind": 2,
+        "importPath": "amoapp.worker",
+        "description": "amoapp.worker",
+        "peekOfCode": "def process_once(\n    env: EnvConfig,\n    api: AmoApi,\n    minutes_back: Optional[int] = None,\n) -> Dict[str, Any]:\n    now = int(time.time())\n    lookback_min = minutes_back if minutes_back is not None else \\\n        env.lookback_min\n    last_success = read_last_success(env.state_path)\n    since = compute_since(now, lookback_min, last_success)",
+        "detail": "amoapp.worker",
+        "documentation": {}
+    },
+    {
+        "label": "log",
+        "kind": 5,
+        "importPath": "amoapp.worker",
+        "description": "amoapp.worker",
+        "peekOfCode": "log = get_logger(\"amo-calc\")\ndef init_env_api() -> Tuple[EnvConfig, AmoApi]:\n    env = load_env()\n    setup_logging(None)\n    api = AmoApi(api_base=env.api_base, token=env.token)\n    return env, api\ndef process_once(\n    env: EnvConfig,\n    api: AmoApi,\n    minutes_back: Optional[int] = None,",
+        "detail": "amoapp.worker",
+        "documentation": {}
+    },
+    {
+        "label": "health",
+        "kind": 2,
+        "importPath": "app",
+        "description": "app",
+        "peekOfCode": "def health():\n    return \"OK\", 200\n@app.get(\"/api/ping\")\ndef ping():\n    return jsonify(ok=True, source=\"amoapp\"), 200",
+        "detail": "app",
+        "documentation": {}
+    },
+    {
+        "label": "ping",
+        "kind": 2,
+        "importPath": "app",
+        "description": "app",
+        "peekOfCode": "def ping():\n    return jsonify(ok=True, source=\"amoapp\"), 200",
+        "detail": "app",
+        "documentation": {}
+    },
+    {
+        "label": "app",
+        "kind": 5,
+        "importPath": "app",
+        "description": "app",
+        "peekOfCode": "app = Flask(__name__)\n@app.get(\"/health\")\ndef health():\n    return \"OK\", 200\n@app.get(\"/api/ping\")\ndef ping():\n    return jsonify(ok=True, source=\"amoapp\"), 200",
+        "detail": "app",
+        "documentation": {}
+    }
+]
