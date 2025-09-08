@@ -24,25 +24,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'dev' }}
+
     steps:
       - uses: actions/checkout@v4
 
-      # ① Сразу нормализуем .sh (LF) и проверим shebang/+x — до любых деплоев
+      # ① Сразу нормализуем .sh (LF)
       - name: Normalize .sh line endings
         run: |
           find amoapp -name "*.sh" -exec sed -i 's/\r$//' {} \;
 
-      - name: Verify run_worker.sh
+      # ② Авто-фиксация shebang и прав у run_worker.sh  ← NEW (перенесено выше)
+      - name: Ensure run_worker.sh is executable and has shebang
         run: |
           set -euo pipefail
-          head -n1 amoapp/run_worker.sh | grep -q '^#!' || \
-            (echo "Missing shebang in run_worker.sh" && exit 1)
-          # если хочешь не падать, а подправить — раскомментируй следующую строку:
-          # chmod +x amoapp/run_worker.sh
-          test -x amoapp/run_worker.sh || \
-            (echo "run_worker.sh is not executable. Run: git update-index --chmod=+x amoapp/run_worker.sh" && exit 1)
+          if ! head -n1 amoapp/run_worker.sh | grep -q '^#!'; then
+            echo "Missing shebang -> adding"
+            sed -i '1i #!/usr/bin/env bash' amoapp/run_worker.sh
+          fi
+          chmod +x amoapp/run_worker.sh
 
-      # ② Lint раньше деплоя — чтобы плохой код не уехал на сервер
+      # ③ Линтеры до деплоя (чтобы плохой код не уехал)
       - name: Sort imports (isort)
         run: |
           python3 -m pip install isort
@@ -53,7 +54,7 @@ jobs:
           python3 -m pip install flake8
           flake8 amoapp
 
-      # ③ Дальше — проверка переменных, SSH, rsync и рестарт
+      # ④ Проверка конфигурации деплоя
       - name: Assert config
         shell: bash
         run: |
@@ -63,6 +64,7 @@ jobs:
           [ -n "${{ vars.DEPLOY_USER }}" ] || { echo "vars.DEPLOY_USER is empty"; exit 1; }
           [ -n "${{ vars.DEPLOY_DIR }}" ]  || { echo "vars.DEPLOY_DIR is empty";  exit 1; }
 
+      # ⑤ SSH (алиас target)
       - name: Setup SSH
         shell: bash
         run: |
@@ -97,6 +99,7 @@ jobs:
       - name: SSH ping
         run: ssh -o IdentitiesOnly=yes target "echo OK && whoami && hostname"
 
+      # ⑥ Rsync исходников
       - name: Rsync sources (exclude .venv)
         shell: bash
         run: |
@@ -105,13 +108,13 @@ jobs:
           EX_ARGS=()
           for e in "${EXS[@]}"; do [ -n "$e" ] && EX_ARGS+=(--exclude "$e"); done
 
-          # если хочешь гарантировать +x на сервере — можно добавить --chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r
           rsync -azvv --itemize-changes --human-readable --delete \
             --no-perms --no-owner --no-group --omit-dir-times \
             "${EX_ARGS[@]}" \
             -e "ssh -o IdentitiesOnly=yes" \
             ./  target:"${{ vars.DEPLOY_DIR }}/"
 
+      # ⑦ Установка deps и рестарт сервисов
       - name: Post-deploy (venv + deps + restart)
         run: |
           ssh -o IdentitiesOnly=yes target "bash -lc '
@@ -131,11 +134,11 @@ jobs:
 
             sudo -n systemctl daemon-reload
             sudo -n systemctl restart amoapp.service
-            # перезапустим таймер, чтобы график обновился
             sudo -n systemctl restart amoapp-worker.timer
             sudo -n systemctl status amoapp.service --no-pager | head -n 20 || true
           '"
 
+      # ⑧ Health-check
       - name: Health check
         run: |
           ssh -o IdentitiesOnly=yes target "bash -lc '
@@ -143,12 +146,24 @@ jobs:
             curl -fsS http://127.0.0.1:8000/health | sed -e \"s/.*/health OK: &/\"
           '"
 
-      # Логи при фейле — и веб, и воркер
+      # ⑨ Логи при фейле — автономный SSH без алиаса  ← CHANGED
       - name: Fetch logs on failure
         if: failure()
         run: |
-          ssh -o IdentitiesOnly=yes target "bash -lc '
-            sudo -n journalctl -xeu amoapp.service --no-pager | tail -n 200 || true
-            echo \"---\"
-            sudo -n journalctl -xeu amoapp-worker.service --no-pager | tail -n 200 || true
-          '"
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${{ secrets.SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          touch ~/.ssh/known_hosts && chmod 644 ~/.ssh/known_hosts
+
+          ssh -o IdentitiesOnly=yes \
+              -o StrictHostKeyChecking=no \
+              -p "${{ vars.SSH_PORT || '22' }}" \
+              -i ~/.ssh/id_ed25519 \
+              "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}" \
+              "bash -lc '
+                echo === amoapp.service ===
+                sudo -n journalctl -xeu amoapp.service --no-pager | tail -n 200 || true
+                echo === amoapp-worker.service ===
+                sudo -n journalctl -xeu amoapp-worker.service --no-pager | tail -n 200 || true
+              '"
