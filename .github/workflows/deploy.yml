@@ -128,26 +128,13 @@ jobs:
               python -m pip install -r requirements.txt || python -m pip install -r requirements.txt --break-system-packages
             fi
 
-            # страховка на сервере: LF и права у скрипта
             sed -i \"s/\r$//\" amoapp/run_worker.sh || true
             chmod 755 amoapp/run_worker.sh || true
 
-          # функция: sudo c паролем при необходимости
-            sudo_try() {
-              if sudo -n true 2>/dev/null; then
-                sudo -n \"$@\"
-              elif [ -n \"${{ secrets.SUDO_PASSWORD }}\" ]; then
-                echo \"${{ secrets.SUDO_PASSWORD }}\" | sudo -S -p \"\" \"$@\"
-              else
-                echo \"No NOPASSWD and no SUDO_PASSWORD secret set\" >&2
-                exit 1
-              fi
-            }
-
-            sudo_try /usr/bin/systemctl daemon-reload
-            sudo_try /usr/bin/systemctl restart amoapp.service
-            sudo_try /usr/bin/systemctl restart amoapp-worker.timer
-            sudo_try /usr/bin/systemctl status amoapp.service --no-pager | head -n 20 || true
+            sudo -n /usr/bin/systemctl daemon-reload
+            sudo -n /usr/bin/systemctl restart amoapp.service
+            sudo -n /usr/bin/systemctl restart amoapp-worker.timer
+            sudo -n /usr/bin/systemctl status amoapp.service --no-pager | head -n 20 || true
           '"
 
       # ⑧ Health-check
