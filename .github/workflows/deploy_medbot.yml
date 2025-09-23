@@ -83,6 +83,7 @@ jobs:
       - name: Prepare deploy dir
         run: ssh -o IdentitiesOnly=yes target "mkdir -p ${DEPLOY_DIR}"
 
+
       - name: Rsync medbot sources
         shell: bash
         run: |
