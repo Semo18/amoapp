@@ -1,0 +1,131 @@
+name: Deploy medbot
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - "medbot/**"
+      - ".github/workflows/deploy_medbot.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-medbot-${{ github.event_name }}-${{ github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: dev
+
+    env:
+      DEPLOY_DIR: /var/www/medbot
+      SERVICE_NAME: medbot.service
+      HOST: ${{ secrets.HOST }}
+      USER: ${{ secrets.USER }}
+      SSH_PORT: ${{ secrets.SSH_PORT }}
+      RSYNC_EXCLUDES: ".git,.github,.DS_Store,.venv,*.log,__pycache__/,*.pyc,.env,.env.example"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # (необязательные быстрые проверки только папки medbot)
+      - name: Sort imports (isort)
+        run: |
+          python3 -m pip install -q isort
+          isort --check-only medbot || true
+
+      - name: Lint (flake8)
+        run: |
+          python3 -m pip install -q flake8
+          flake8 medbot || true
+
+      - name: Assert config
+        run: |
+          [ -n "${{ secrets.SSH_KEY }}" ] || { echo "secrets.SSH_KEY empty"; exit 1; }
+          [ -n "${HOST}" ] || { echo "HOST empty"; exit 1; }
+          [ -n "${USER}" ] || { echo "USER empty"; exit 1; }
+          [ -n "${DEPLOY_DIR}" ] || { echo "DEPLOY_DIR empty"; exit 1; }
+
+      - name: Setup SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${{ secrets.SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          if [ -n "${{ secrets.KNOWN_HOSTS }}" ]; then
+            printf '%s\n' "${{ secrets.KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          else
+            ssh-keyscan -p "${SSH_PORT:-22}" -H "${HOST}" > ~/.ssh/known_hosts 2>/dev/null
+          fi
+          chmod 644 ~/.ssh/known_hosts
+          {
+            echo "Host target"
+            echo "  HostName ${HOST}"
+            echo "  User ${USER}"
+            echo "  Port ${SSH_PORT:-22}"
+            echo "  IdentityFile ~/.ssh/id_ed25519"
+            echo "  IdentitiesOnly yes"
+            echo "  StrictHostKeyChecking yes"
+          } > ~/.ssh/config
+          chmod 600 ~/.ssh/config
+
+      - name: Show target
+        run: echo "Deploying to ${USER}@${HOST}:${DEPLOY_DIR}"
+
+      - name: SSH ping
+        run: ssh -o IdentitiesOnly=yes target "echo OK && whoami && hostname"
+
+      # гарантируем, что /var/www/medbot существует ДО rsync
+      - name: Prepare deploy dir
+        run: |
+          ssh -o IdentitiesOnly=yes target "sudo mkdir -p ${DEPLOY_DIR} && sudo chown -R ${USER}:${USER} ${DEPLOY_DIR}"
+
+      - name: Rsync medbot sources
+        shell: bash
+        run: |
+          IFS=',' read -ra EXS <<< "${RSYNC_EXCLUDES}"
+          EX_ARGS=()
+          for e in "${EXS[@]}"; do [ -n "$e" ] && EX_ARGS+=(--exclude "$e"); done
+          rsync -azvv --itemize-changes --human-readable --delete \
+            --no-perms --no-owner --no-group --omit-dir-times \
+            "${EX_ARGS[@]}" \
+            -e "ssh -o IdentitiesOnly=yes" \
+            medbot/  target:"${DEPLOY_DIR}/"
+
+      - name: Post-deploy (venv + deps + restart)
+        run: |
+          ssh -o IdentitiesOnly=yes target "bash -lc '
+            set -euo pipefail
+            cd ${DEPLOY_DIR}
+            python3 -m venv .venv || true
+            . .venv/bin/activate
+            python -m pip install --upgrade pip wheel || true
+            # фикс совместимости openai/httpx
+            python -m pip install \"httpx<0.28\"
+            if [ -f requirements.txt ]; then
+              python -m pip install -r requirements.txt || python -m pip install -r requirements.txt --break-system-packages
+            fi
+            sudo -n /usr/bin/systemctl daemon-reload
+            sudo -n /usr/bin/systemctl restart ${SERVICE_NAME}
+            sudo -n /usr/bin/systemctl status ${SERVICE_NAME} --no-pager | head -n 30 || true
+          '"
+
+      - name: Health check (local port)
+        run: |
+          ssh -o IdentitiesOnly=yes target "bash -lc '
+            set -e
+            curl -fsS http://127.0.0.1:8011/health | sed -e \"s/.*/health OK: &/\"
+          '"
+
+      - name: Fetch logs on failure
+        if: failure()
+        run: |
+          ssh -o IdentitiesOnly=yes target "bash -lc '
+            echo === medbot.service ===
+            sudo -n journalctl -xeu medbot.service --no-pager | tail -n 200 || true
+          '"

@@ -3,6 +3,9 @@ name: Deploy amoapp
 on:
   push:
     branches: [ "main" ]
+    paths:
+      - "amoapp/**"
+      - ".github/workflows/deploy.yml"
   workflow_dispatch:
     inputs:
       environment:
@@ -11,6 +14,7 @@ on:
         required: true
         default: dev
         options: [dev, staging, prod]
+
 
 permissions:
   contents: read
