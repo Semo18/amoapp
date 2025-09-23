@@ -5,7 +5,6 @@ on:
     branches: [ "main" ]
     paths:
       - "medbot/**"
-      - ".github/workflows/deploy_medbot.yml"
   workflow_dispatch: {}
 
 permissions:
@@ -80,10 +79,9 @@ jobs:
       - name: SSH ping
         run: ssh -o IdentitiesOnly=yes target "echo OK && whoami && hostname"
 
-      # гарантируем, что /var/www/medbot существует ДО rsync
+      # без sudo, чтобы не требовался пароль
       - name: Prepare deploy dir
-        run: |
-          ssh -o IdentitiesOnly=yes target "sudo mkdir -p ${DEPLOY_DIR} && sudo chown -R ${USER}:${USER} ${DEPLOY_DIR}"
+        run: ssh -o IdentitiesOnly=yes target "mkdir -p ${DEPLOY_DIR}"
 
       - name: Rsync medbot sources
         shell: bash
@@ -105,7 +103,6 @@ jobs:
             python3 -m venv .venv || true
             . .venv/bin/activate
             python -m pip install --upgrade pip wheel || true
-            # фикс совместимости openai/httpx
             python -m pip install \"httpx<0.28\"
             if [ -f requirements.txt ]; then
               python -m pip install -r requirements.txt || python -m pip install -r requirements.txt --break-system-packages
