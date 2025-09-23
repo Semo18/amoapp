@@ -49,6 +49,14 @@
         "documentation": {}
     },
     {
+        "label": "Dict",
+        "importPath": "typing",
+        "description": "typing",
+        "isExtraImport": true,
+        "detail": "typing",
+        "documentation": {}
+    },
+    {
         "label": "Optional",
         "importPath": "typing",
         "description": "typing",
@@ -211,6 +219,14 @@
         "documentation": {}
     },
     {
+        "label": "replace",
+        "importPath": "dataclasses",
+        "description": "dataclasses",
+        "isExtraImport": true,
+        "detail": "dataclasses",
+        "documentation": {}
+    },
+    {
         "label": "requests",
         "kind": 6,
         "isExtraImport": true,
@@ -292,7 +308,7 @@
         "kind": 6,
         "importPath": "amoapp.amo_api",
         "description": "amoapp.amo_api",
-        "peekOfCode": "class AmoApi:\n    def __init__(self, api_base: str, token: str) -> None:\n        self.base = api_base.rstrip(\"/\")\n        self.http = HttpClient(token)\n    def fetch_updated_leads(self, since_unix: int) -> Iterator[Dict[str, Any]]:\n        url = (\n            f\"{self.base}/leads?with=custom_fields_values&limit={LEADS_LIMIT}\"\n            f\"&filter[updated_at][from]={since_unix}\"\n        )\n        while url:",
+        "peekOfCode": "class AmoApi:\n    def __init__(self, api_base: str, token: str) -> None:\n        self.base = api_base.rstrip(\"/\")\n        self.http = HttpClient(token)\n    # --- Pipelines ---------------------------------------------------------\n    def get_pipelines(self) -> Iterator[Dict[str, Any]]:\n        \"\"\"Итератор по всем воронкам.\"\"\"\n        url = f\"{self.base}/leads/pipelines?limit=250\"\n        while url:\n            data = self.http.get_json(url)",
         "detail": "amoapp.amo_api",
         "documentation": {}
     },
@@ -337,7 +353,7 @@
         "kind": 2,
         "importPath": "amoapp.app",
         "description": "amoapp.app",
-        "peekOfCode": "def health() -> Any:\n    return jsonify(\n        ok=True,\n        ts=dt.datetime.utcnow().isoformat(),\n        domain=ENV.domain,\n    )\ndef _token_ok() -> bool:\n    # Если RUN_TOKEN не задан, доступ открыт (как раньше).\n    if not RUN_TOKEN:\n        return True",
+        "peekOfCode": "def health() -> Any:\n    cfg: Dict[str, Any] = {\n        \"domain\": ENV.domain,\n        \"pipeline_id\": ENV.pipeline_id,\n        \"pipeline_name\": ENV.pipeline_name,\n        # ниже — не секреты, полезно для отладки\n        \"field_installment_id\": ENV.field_installment_id,\n        \"source_budget_field_id\": ENV.custom_main_budget_id,\n        \"lookback_min\": ENV.lookback_min,\n        \"formula\": {",
         "detail": "amoapp.app",
         "documentation": {}
     },
@@ -355,7 +371,7 @@
         "kind": 5,
         "importPath": "amoapp.app",
         "description": "amoapp.app",
-        "peekOfCode": "RUN_TOKEN = os.environ.get(\"RUN_TOKEN\", \"\").strip()\napp = Flask(__name__)\n@app.get(\"/health\")\ndef health() -> Any:\n    return jsonify(\n        ok=True,\n        ts=dt.datetime.utcnow().isoformat(),\n        domain=ENV.domain,\n    )\ndef _token_ok() -> bool:",
+        "peekOfCode": "RUN_TOKEN = os.environ.get(\"RUN_TOKEN\", \"\").strip()\napp = Flask(__name__)\n@app.get(\"/health\")\ndef health() -> Any:\n    cfg: Dict[str, Any] = {\n        \"domain\": ENV.domain,\n        \"pipeline_id\": ENV.pipeline_id,\n        \"pipeline_name\": ENV.pipeline_name,\n        # ниже — не секреты, полезно для отладки\n        \"field_installment_id\": ENV.field_installment_id,",
         "detail": "amoapp.app",
         "documentation": {}
     },
@@ -364,7 +380,7 @@
         "kind": 5,
         "importPath": "amoapp.app",
         "description": "amoapp.app",
-        "peekOfCode": "app = Flask(__name__)\n@app.get(\"/health\")\ndef health() -> Any:\n    return jsonify(\n        ok=True,\n        ts=dt.datetime.utcnow().isoformat(),\n        domain=ENV.domain,\n    )\ndef _token_ok() -> bool:\n    # Если RUN_TOKEN не задан, доступ открыт (как раньше).",
+        "peekOfCode": "app = Flask(__name__)\n@app.get(\"/health\")\ndef health() -> Any:\n    cfg: Dict[str, Any] = {\n        \"domain\": ENV.domain,\n        \"pipeline_id\": ENV.pipeline_id,\n        \"pipeline_name\": ENV.pipeline_name,\n        # ниже — не секреты, полезно для отладки\n        \"field_installment_id\": ENV.field_installment_id,\n        \"source_budget_field_id\": ENV.custom_main_budget_id,",
         "detail": "amoapp.app",
         "documentation": {}
     },
@@ -472,7 +488,7 @@
         "kind": 2,
         "importPath": "amoapp.env",
         "description": "amoapp.env",
-        "peekOfCode": "def load_env() -> EnvConfig:\n    domain = os.environ.get(\"AMO_DOMAIN\", \"\").strip()\n    token = os.environ.get(\"AMO_TOKEN\", \"\").strip()\n    field_raw = os.environ.get(\"FIELD_INSTALLMENT_ID\", \"0\")\n    custom_raw = os.environ.get(\"CUSTOM_MAIN_BUDGET_ID\", \"\").strip()\n    lookback_raw = os.environ.get(\"WORKER_LOOKBACK_MIN\", \"\")\n    formula_type = os.environ.get(\"FORMULA_TYPE\", \"fixed_divisor\").strip()\n    div_raw = os.environ.get(\"FORMULA_DIVISOR\", str(DEFAULT_DIVISOR))\n    formula_divisor = _to_float(div_raw or str(DEFAULT_DIVISOR),\n                                DEFAULT_DIVISOR)",
+        "peekOfCode": "def load_env() -> EnvConfig:\n    domain = os.environ.get(\"AMO_DOMAIN\", \"\").strip()\n    token = os.environ.get(\"AMO_TOKEN\", \"\").strip()\n    field_raw = os.environ.get(\"FIELD_INSTALLMENT_ID\", \"0\")\n    custom_raw = os.environ.get(\"CUSTOM_MAIN_BUDGET_ID\", \"\").strip()\n    lookback_raw = os.environ.get(\"WORKER_LOOKBACK_MIN\", \"\")\n    formula_type = (\n        os.environ.get(\"FORMULA_TYPE\", \"fixed_divisor\").strip()\n    )\n    div_raw = os.environ.get(\"FORMULA_DIVISOR\", str(DEFAULT_DIVISOR))",
         "detail": "amoapp.env",
         "documentation": {}
     },
@@ -589,7 +605,7 @@
         "kind": 2,
         "importPath": "amoapp.worker",
         "description": "amoapp.worker",
-        "peekOfCode": "def init_env_api() -> Tuple[EnvConfig, AmoApi]:\n    env = load_env()\n    setup_logging(None)\n    api = AmoApi(api_base=env.api_base, token=env.token)\n    return env, api\ndef process_once(\n    env: EnvConfig,\n    api: AmoApi,\n    minutes_back: Optional[int] = None,\n) -> Dict[str, Any]:",
+        "peekOfCode": "def init_env_api() -> Tuple[EnvConfig, AmoApi]:\n    \"\"\"Инициализация окружения и API.\n    Если pipeline_id не задан, но задано имя, резолвим его один раз.\n    \"\"\"\n    env = load_env()\n    setup_logging(None)\n    api = AmoApi(api_base=env.api_base, token=env.token)\n    if env.pipeline_id is None and env.pipeline_name:\n        pid = api.resolve_pipeline_id(env.pipeline_name)\n        if not pid:",
         "detail": "amoapp.worker",
         "documentation": {}
     },
@@ -607,7 +623,7 @@
         "kind": 5,
         "importPath": "amoapp.worker",
         "description": "amoapp.worker",
-        "peekOfCode": "log = get_logger(\"amo-calc\")\ndef init_env_api() -> Tuple[EnvConfig, AmoApi]:\n    env = load_env()\n    setup_logging(None)\n    api = AmoApi(api_base=env.api_base, token=env.token)\n    return env, api\ndef process_once(\n    env: EnvConfig,\n    api: AmoApi,\n    minutes_back: Optional[int] = None,",
+        "peekOfCode": "log = get_logger(\"amo-calc\")\ndef init_env_api() -> Tuple[EnvConfig, AmoApi]:\n    \"\"\"Инициализация окружения и API.\n    Если pipeline_id не задан, но задано имя, резолвим его один раз.\n    \"\"\"\n    env = load_env()\n    setup_logging(None)\n    api = AmoApi(api_base=env.api_base, token=env.token)\n    if env.pipeline_id is None and env.pipeline_name:\n        pid = api.resolve_pipeline_id(env.pipeline_name)",
         "detail": "amoapp.worker",
         "documentation": {}
     },
