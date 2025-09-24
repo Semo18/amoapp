@@ -1,10 +1,17 @@
+# app.py
 import os
 from fastapi import FastAPI, Request, HTTPException
 from aiogram import Bot, Dispatcher
 from aiogram.types import Update
+import logging
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+)
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "secret")

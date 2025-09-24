@@ -43,7 +43,10 @@ def get_or_create_thread(chat_id: int) -> str:
 
 # --- файлы / загрузка ---
 def _upload_bytes(name: str, data: bytes) -> str:
-    f = client.files.create(file=(name, io.BytesIO(data)))
+    f = client.files.create(
+        file=(name, io.BytesIO(data)),
+        purpose="assistants",       # <— это критично
+    )
     return f.id
 
 async def _telegram_file_to_bytes(msg: Message) -> Tuple[str, bytes, Kind]:
