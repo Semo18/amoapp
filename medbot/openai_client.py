@@ -1,29 +1,33 @@
-# medbot/openai_client.py
-import os, io, asyncio, time, mimetypes, logging
-from typing import Optional, Tuple, Literal
+import os, io, asyncio, time, mimetypes, pathlib, traceback
+from typing import Optional, Tuple, List, Dict, Any
 from aiogram.types import Message
 from openai import OpenAI
 from storage import get_thread_id, set_thread_id
 from pydub import AudioSegment
 
+# --- конфиг ---
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 ASSISTANT_ID = os.getenv("ASSISTANT_ID")
 DELAY_SEC = int(os.getenv("REPLY_DELAY_SEC", "0"))
+LOG_CHAT_ID = os.getenv("LOG_CHAT_ID", "")
+LOG_PREFIX = "[medbot]"
 
-# ---------- helpers ----------
+# --- поддержка типов ---
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+RETRIEVAL_EXTS = {".pdf", ".txt", ".md", ".csv", ".docx", ".pptx", ".xlsx", ".json", ".rtf", ".html", ".htm"}
+AUDIO_EXTS = {".wav", ".mp3", ".m4a", ".ogg", ".opus"}
+
 def _ext(name: str) -> str:
-    return os.path.splitext(name or "")[1].lower()
+    return pathlib.Path(name).suffix.lower()
 
-FILE_SEARCH_EXTS = {
-    ".pdf", ".txt", ".md", ".doc", ".docx", ".rtf",
-    ".xls", ".xlsx", ".csv", ".tsv",
-    ".ppt", ".pptx",
-    ".json", ".html", ".htm", ".xml"
-}
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
-AUDIO_EXTS = {".wav", ".mp3", ".ogg", ".oga", ".m4a", ".flac", ".amr"}
+def _is_image(name: str) -> bool:
+    return _ext(name) in IMAGE_EXTS
 
-Kind = Literal["image", "audio", "doc", "text"]
+def _is_audio(name: str) -> bool:
+    return _ext(name) in AUDIO_EXTS
+
+def _is_retrieval_doc(name: str) -> bool:
+    return _ext(name) in RETRIEVAL_EXTS
 
 # --- треды ---
 async def ensure_thread_choice(chat_id: int, choice: str) -> bool:
@@ -41,55 +45,40 @@ def get_or_create_thread(chat_id: int) -> str:
     set_thread_id(chat_id, th_obj.id)
     return th_obj.id
 
-# --- файлы / загрузка ---
+# --- файлы ---
 def _upload_bytes(name: str, data: bytes) -> str:
-    f = client.files.create(
+    return client.files.create(
         file=(name, io.BytesIO(data)),
-        purpose="assistants",       # <— это критично
-    )
-    return f.id
+        purpose="assistants"
+    ).id
 
-async def _telegram_file_to_bytes(msg: Message) -> Tuple[str, bytes, Kind]:
-    """
-    Возвращает (filename, data, kind)
-    kind ∈ {'image','audio','doc','text'}
-    """
+async def _telegram_file_to_bytes(msg: Message) -> Tuple[str, bytes]:
+    """Скачивает документ/фото/голос и возвращает (filename, bytes)."""
     if getattr(msg, "voice", None):
-        # voice OGG/Opus -> WAV (для распознавания/унификации)
-        file = await msg.bot.get_file(msg.voice.file_id)
-        b = await msg.bot.download_file(file.file_path)
+        f = await msg.bot.get_file(msg.voice.file_id)
+        b = await msg.bot.download_file(f.file_path)
         raw = b.read()
-        wav = AudioSegment.from_file(io.BytesIO(raw), format="ogg")
+        wav = AudioSegment.from_file(io.BytesIO(raw))  # авто-детект ogg/opus
         buf = io.BytesIO()
         wav.export(buf, format="wav")
-        return "voice.wav", buf.getvalue(), "audio"
+        return "voice.wav", buf.getvalue()
 
     if getattr(msg, "audio", None):
-        file = await msg.bot.get_file(msg.audio.file_id)
-        b = await msg.bot.download_file(file.file_path)
-        name = msg.audio.file_name or "audio" + (_ext(msg.audio.file_name or "") or ".mp3")
-        return name, b.read(), "audio"
-
-    if getattr(msg, "photo", None):
-        file = await msg.bot.get_file(msg.photo[-1].file_id)
-        b = await msg.bot.download_file(file.file_path)
-        return "photo.jpg", b.read(), "image"
+        f = await msg.bot.get_file(msg.audio.file_id)
+        b = await msg.bot.download_file(f.file_path)
+        return (msg.audio.file_name or "audio.mp3"), b.read()
 
     if getattr(msg, "document", None):
-        file = await msg.bot.get_file(msg.document.file_id)
-        b = await msg.bot.download_file(file.file_path)
-        name = msg.document.file_name or "document"
-        ext = _ext(name)
-        mime = (msg.document.mime_type or mimetypes.types_map.get(ext, "")).lower()
-        if ext in IMAGE_EXTS or mime.startswith("image/"):
-            return name or "image.jpg", b.read(), "image"
-        elif ext in AUDIO_EXTS or mime.startswith("audio/"):
-            return name or "audio.wav", b.read(), "audio"
-        else:
-            return name or "document.bin", b.read(), "doc"
+        f = await msg.bot.get_file(msg.document.file_id)
+        b = await msg.bot.download_file(f.file_path)
+        return (msg.document.file_name or "document"), b.read()
 
-    # текстовое сообщение
-    return "message.txt", (msg.text or "").encode("utf-8"), "text"
+    if getattr(msg, "photo", None):
+        f = await msg.bot.get_file(msg.photo[-1].file_id)
+        b = await msg.bot.download_file(f.file_path)
+        return "photo.jpg", b.read()
+
+    return "message.txt", (msg.text or "").encode("utf-8")
 
 def _first_text(messages) -> Optional[str]:
     for m in messages.data:
@@ -101,107 +90,96 @@ def _first_text(messages) -> Optional[str]:
 
 # --- основная задача ---
 async def schedule_processing(msg: Message, delay_sec: Optional[int] = None) -> None:
-    """Отложенная обработка входного сообщения через OpenAI Assistants."""
-    delay = int(delay_sec if delay_sec is not None else DELAY_SEC)
-    if delay > 0:
-        await asyncio.sleep(delay)
+    """Обработка сообщения через OpenAI Assistants."""
+    try:
+        delay = int(delay_sec if delay_sec is not None else DELAY_SEC)
+        if delay > 0:
+            await asyncio.sleep(delay)
 
-    chat_id = msg.chat.id
-    thread_id = get_or_create_thread(chat_id)
-    logging.info(f"[medbot] start processing chat_id={chat_id} thread_id={thread_id}")
+        chat_id = msg.chat.id
+        thread_id = get_or_create_thread(chat_id)
 
+        base_text = msg.text or "Проанализируй вложение и ответь как медицинский консультант."
 
-    # 1) Подготовка контента
-    content = None        # список частей для content=[...]
-    attachments = None    # только для file_search документов
+        content: List[Dict[str, Any]] = [{"type": "text", "text": base_text}]
+        attachments = None
 
-    if any([
-        getattr(msg, "voice", None),
-        getattr(msg, "audio", None),
-        getattr(msg, "document", None),
-        getattr(msg, "photo", None),
-    ]):
-        name, data, kind = await _telegram_file_to_bytes(msg)
-        ext = _ext(name)
+        if any([getattr(msg, "voice", None),
+                getattr(msg, "audio", None),
+                getattr(msg, "document", None),
+                getattr(msg, "photo", None)]):
 
-        if kind == "image":
-            # Картинки — как input_image, НЕ через file_search
-            file_id = _upload_bytes(name, data)
-            content = [
-                {"type": "input_text",
-                 "text": f"Проанализируй изображение {name}. Дай медицинский комментарий и рекомендации."},
-                {"type": "input_image", "image_file": {"file_id": file_id}},
-            ]
+            name, data = await _telegram_file_to_bytes(msg)
+            fid = _upload_bytes(name, data)
 
-        elif kind == "audio":
-            # Аудио — сначала транскрибируем
+            if _is_image(name):
+                content.append({"type": "image_file", "image_file": {"file_id": fid}})
+
+            elif _is_audio(name):
+                # транскрипция через whisper
+                try:
+                    tr = client.audio.transcriptions.create(
+                        model="whisper-1",
+                        file=(name, io.BytesIO(data)),
+                    )
+                    text = tr.text.strip() if getattr(tr, "text", None) else ""
+                except Exception:
+                    text = ""
+                if not text:
+                    text = "Не удалось автоматически распознать голосовое сообщение."
+                content = [{"type": "text",
+                            "text": f"Расшифровка голосового ({name}):\n{text}\n\nОтветь как медицинский консультант."}]
+
+            elif _is_retrieval_doc(name):
+                attachments = [{"file_id": fid, "tools": [{"type": "file_search"}]}]
+                content[0]["text"] = f"{base_text}\n\nУчти документ: {name}"
+
+            else:
+                content[0]["text"] = f"{base_text}\n\n(Файл {name} загружен; если нужно, укажите правильный формат: PDF/JPG и т.п.)"
+
+        # 2) сообщение в тред
+        client.beta.threads.messages.create(
+            thread_id=thread_id,
+            role="user",
+            content=content,
+            attachments=attachments,
+        )
+
+        # 3) запуск run
+        run = client.beta.threads.runs.create(
+            thread_id=thread_id,
+            assistant_id=ASSISTANT_ID,
+            tool_choice="auto",
+        )
+
+        # 4) ждём завершения
+        started = time.time()
+        while True:
+            run = client.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run.id)
+            if run.status in {"completed", "failed", "requires_action", "cancelled", "expired"}:
+                break
+            await asyncio.sleep(2)
+            if time.time() - started > 600:
+                break
+
+        # 5) ответ пользователю
+        if run.status == "completed":
+            msgs = client.beta.threads.messages.list(thread_id=thread_id, order="desc", limit=1)
+            txt = _first_text(msgs)
+            if txt:
+                await msg.answer(txt)
+                return
+
+        await msg.answer("Внутренняя ошибка обработки. Пожалуйста, повторите позже.")
+    except Exception as e:
+        # ответ пользователю
+        await msg.answer("Внутренняя ошибка обработки. Пожалуйста, повторите позже.")
+        # лог в чат
+        if LOG_CHAT_ID:
             try:
-                tr = client.audio.transcriptions.create(
-                    model="whisper-1",  # доступная и надёжная модель распознавания
-                    file=(name, io.BytesIO(data)),
+                await msg.bot.send_message(
+                    LOG_CHAT_ID,
+                    f"{LOG_PREFIX} exception: {e}\n{traceback.format_exc()}"
                 )
-                text = tr.text.strip() if getattr(tr, "text", None) else ""
-            except Exception as e:
-                text = ""
-            if not text:
-                text = "Не удалось автоматически распознать голосовое сообщение."
-            content = [
-                {"type": "input_text",
-                 "text": f"Расшифровка голосового ({name}):\n{text}\n\nОтветь как медицинский консультант."}
-            ]
-
-        elif kind == "doc" and ext in FILE_SEARCH_EXTS:
-            # Документ — через file_search
-            file_id = _upload_bytes(name, data)
-            attachments = [{"file_id": file_id, "tools": [{"type": "file_search"}]}]
-            content = [{
-                "type": "input_text",
-                "text": f"Прошу учесть документ {name} при анализе. Ответь как медконсультант."
-            }]
-
-        else:
-            # Неподдерживаемый файл — просто текстовая подсказка без вложения
-            content = [{
-                "type": "input_text",
-                "text": f"Пользователь прикрепил файл {name}, который нельзя проиндексировать. "
-                        f"Ответь по описанию от пользователя и скажи, какие форматы подходят: PDF/DOCX/TXT/CSV/XLSX/PPTX/HTML."
-            }]
-
-    else:
-        # чистый текст
-        content = [{"type": "input_text", "text": msg.text or "Опиши симптомы и приложи анализы."}]
-
-    # 2) Сообщение в тред
-    kwargs = dict(thread_id=thread_id, role="user", content=content)
-    if attachments:
-        kwargs["attachments"] = attachments
-    client.beta.threads.messages.create(**kwargs)
-
-    # 3) Запускаем ран ассистента
-    run = client.beta.threads.runs.create(
-        thread_id=thread_id,
-        assistant_id=ASSISTANT_ID,
-        tool_choice="auto",
-    )
-
-    # 4) Ожидание результата (тайм-бокс 10 минут)
-    started = time.time()
-    while True:
-        run = client.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run.id)
-        if run.status in {"completed", "failed", "requires_action", "cancelled", "expired"}:
-            break
-        await asyncio.sleep(2)
-        if time.time() - started > 600:
-            break
-
-    logging.info(f"[medbot] run status={run.status} chat_id={chat_id}")
-
-    # 5) Ответ в Telegram
-    if run.status == "completed":
-        msgs = client.beta.threads.messages.list(thread_id=thread_id, order="desc", limit=3)
-        txt = _first_text(msgs)
-        if txt:
-            await msg.answer(txt)
-            return
-
-    await msg.answer("Внутренняя ошибка обработки. Пожалуйста, попробуйте позже.")
+            except Exception:
+                pass
