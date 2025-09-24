@@ -77,14 +77,6 @@ async def send_log(runtime_bot: Bot, text: str) -> None:
         # не падаем на логах
         pass
 
-# --- треды и файлы — без изменений ---
-def get_or_create_thread(chat_id: int) -> str:
-    th = get_thread_id(chat_id)
-    if th:
-        return th
-    th_obj = client.beta.threads.create()
-    set_thread_id(chat_id, th_obj.id)
-    return th_obj.id
 
 def _upload_bytes(name: str, data: bytes) -> str:
     return client.files.create(file=(name, io.BytesIO(data)), purpose="assistants").id
