@@ -1,5 +1,5 @@
 # medbot/openai_client.py
-import os, io, asyncio, time, mimetypes
+import os, io, asyncio, time, mimetypes, logging
 from typing import Optional, Tuple, Literal
 from aiogram.types import Message
 from openai import OpenAI
@@ -8,7 +8,7 @@ from pydub import AudioSegment
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 ASSISTANT_ID = os.getenv("ASSISTANT_ID")
-DELAY_SEC = int(os.getenv("REPLY_DELAY_SEC", "720"))
+DELAY_SEC = int(os.getenv("REPLY_DELAY_SEC", "0"))
 
 # ---------- helpers ----------
 def _ext(name: str) -> str:
@@ -105,6 +105,8 @@ async def schedule_processing(msg: Message, delay_sec: Optional[int] = None) -> 
 
     chat_id = msg.chat.id
     thread_id = get_or_create_thread(chat_id)
+    logging.info(f"[medbot] start processing chat_id={chat_id} thread_id={thread_id}")
+
 
     # 1) Подготовка контента
     content = None        # список частей для content=[...]
@@ -167,12 +169,10 @@ async def schedule_processing(msg: Message, delay_sec: Optional[int] = None) -> 
         content = [{"type": "input_text", "text": msg.text or "Опиши симптомы и приложи анализы."}]
 
     # 2) Сообщение в тред
-    client.beta.threads.messages.create(
-        thread_id=thread_id,
-        role="user",
-        content=content,
-        attachments=attachments,
-    )
+    kwargs = dict(thread_id=thread_id, role="user", content=content)
+    if attachments:
+        kwargs["attachments"] = attachments
+    client.beta.threads.messages.create(**kwargs)
 
     # 3) Запускаем ран ассистента
     run = client.beta.threads.runs.create(
@@ -190,6 +190,8 @@ async def schedule_processing(msg: Message, delay_sec: Optional[int] = None) -> 
         await asyncio.sleep(2)
         if time.time() - started > 600:
             break
+
+    logging.info(f"[medbot] run status={run.status} chat_id={chat_id}")
 
     # 5) Ответ в Telegram
     if run.status == "completed":
