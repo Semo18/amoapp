@@ -24,6 +24,31 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 RETRIEVAL_EXTS = {".pdf", ".txt", ".md", ".csv", ".docx", ".pptx", ".xlsx", ".json", ".rtf", ".html", ".htm"}
 AUDIO_EXTS = {".wav", ".mp3", ".m4a", ".ogg", ".opus"}
 
+# --- треды ---
+async def ensure_thread_choice(chat_id: int, choice: str) -> bool:
+    """
+    Если пользователь пишет "новый", создаём новый thread в OpenAI
+    и сохраняем его ID в Redis. Возвращает True, если создан новый тред.
+    """
+    if choice == "новый":
+        th = client.beta.threads.create()
+        set_thread_id(chat_id, th.id)
+        return True
+    return False
+
+def get_or_create_thread(chat_id: int) -> str:
+    """
+    Возвращает существующий thread_id для чата,
+    либо создаёт новый, если его нет.
+    """
+    th = get_thread_id(chat_id)
+    if th:
+        return th
+    th_obj = client.beta.threads.create()
+    set_thread_id(chat_id, th_obj.id)
+    return th_obj.id
+
+
 def _ext(name: str) -> str:
     return pathlib.Path(name).suffix.lower()
 
