@@ -14,8 +14,10 @@ DELAY_SEC = int(os.getenv("REPLY_DELAY_SEC", "60"))
 
 router = Router()
 
+
 def setup_handlers(dp):
     dp.include_router(router)
+
 
 @router.message(CommandStart())
 async def cmd_start(msg: Message):

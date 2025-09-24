@@ -32,8 +32,17 @@ nano /var/www/medbot/.env
 
 
 
+# РАБОТА НА СЕРВЕРЕ
+Как зайти в нужную папку
+# на сервере
+sudo -iu deployer          # работаем от имени владельца файлов
+cd /var/www/medbot
+pwd && ls -la
 
+# Или проверь, где ещё лежит код:
 
+ls -la /var/www
+ls -la /var/www/app/medbot
 
 
 
