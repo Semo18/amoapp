@@ -1,11 +1,12 @@
+# bot.py
 import os
 import asyncio
 from aiogram import Router, F, Bot
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message
 from aiogram.enums import ChatAction
+from storage import should_ack
 
-from storage import ack_once
 from texts import WELCOME, DISCLAIMER, ACK_DELAYED  # ACK_TEXT заменил на ACK_DELAYED
 from openai_client import schedule_processing, ensure_thread_choice
 
@@ -57,8 +58,8 @@ async def _typing_later(bot: Bot, chat_id: int, start_in: int, duration: int = 6
 async def any_message(msg: Message, bot: Bot):
     chat_id = msg.chat.id
 
-    # 1) авто-квиток — только один раз на чат (TTL по умолчанию 24ч)
-    if ack_once(chat_id):
+    # 1) авто-квиток — только один раз на чат (раз в 1 час тишины)
+    if should_ack(chat_id, cooldown_sec=3600):
         await msg.answer(ACK_DELAYED)
 
     # 2) "три точки" за минуту до ответа (или сразу, если задержка < 60)
