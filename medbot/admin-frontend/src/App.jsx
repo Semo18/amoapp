@@ -5,42 +5,54 @@ const API = import.meta.env.VITE_API_BASE;
 
 export default function App() {
   const [tab, setTab] = useState("chat");
-  const [chats, setChats] = useState([]);
-  const [summary, setSummary] = useState({});
+  const [chats, setChats] = useState([]);       // всегда массив
+  const [summary, setSummary] = useState({});   // объект сводки
   const [loading, setLoading] = useState(false);
   const [selectedChat, setSelectedChat] = useState(null); // текущий выбранный чат
-  const [period, setPeriod] = useState("day");            // период для аналитики: day/week/month
+  const [period, setPeriod] = useState("day");            // day/week/month
 
   useEffect(() => {
+    let cancelled = false;
+
     async function load() {
       setLoading(true);
       try {
         if (tab === "chat") {
           const r = await fetch(`${API}/chats`);
-          setChats(await r.json());
+          const data = await r.json(); // ожидаем { total, items: [...] }
+          if (!cancelled) {
+            setChats(Array.isArray(data?.items) ? data.items : []);
+          }
         } else {
           const r = await fetch(`${API}/analytics/summary?period=${period}`);
-          setSummary(await r.json());
+          const data = await r.json();
+          if (!cancelled) setSummary(data ?? {});
         }
       } catch (e) {
         console.error(e);
+        if (!cancelled) {
+          setChats([]);
+          setSummary({});
+        }
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     }
+
     load();
+    return () => { cancelled = true; };
   }, [tab, period]);
 
   return (
     <div
       style={{
-        fontFamily: "system-ui, sans-serif",
-        padding: "40px 60px",
+        fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
+        padding: "32px 24px",
         maxWidth: 900,
         margin: "0 auto",
       }}
     >
-      <h1 style={{ marginBottom: 16 }}>🩺 MedBot — Админ Панель</h1>
+      <h1 style={{ margin: "8px 0 16px" }}>🩺 MedBot — Админ Панель</h1>
 
       <nav style={{ marginBottom: 20, display: "flex", gap: 8 }}>
         <button onClick={() => { setTab("chat"); setSelectedChat(null); }} disabled={tab === "chat"}>
@@ -79,10 +91,12 @@ export default function App() {
                     <span>
                       <b>@{c.username || "без_ника"}</b>
                     </span>
-                    <span style={{ opacity: 0.7 }}>{c.message_count} сообщений</span>
+                    <span style={{ opacity: 0.7 }}>
+                      {c.messages_total ?? 0} всего / {c.messages_in_period ?? 0} за период
+                    </span>
                   </li>
                 ))}
-                {chats.length === 0 && <li>Данных пока нет.</li>}
+                {chats.length === 0 && <li style={{ opacity: 0.7 }}>Данных пока нет.</li>}
               </ul>
             </>
           )}
@@ -108,7 +122,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* простая сводка; позже заменим на карточки/графики */}
           <pre style={{ background: "#f8fafc", padding: 12, borderRadius: 8 }}>
             {JSON.stringify(summary, null, 2)}
           </pre>
