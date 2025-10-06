@@ -7,3 +7,7 @@ openai==1.44.0
 pydub==0.25.1
 requests==2.32.3
 httpx<0.28
+
+SQLAlchemy==2.0.43
+psycopg[binary]==3.2.10
+python-dateutil==2.9.0.post0
