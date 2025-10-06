@@ -1,0 +1,18 @@
+version: "3.9"
+
+services:
+  pg:
+    image: postgres:16
+    container_name: vl_admin_pg
+    environment:
+      POSTGRES_USER: vl
+      POSTGRES_PASSWORD: vlpass
+      POSTGRES_DB: vl_admin
+      TZ: UTC
+    ports:
+      - "5433:5432"   # чтобы не конфликтовать с локальным Postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:

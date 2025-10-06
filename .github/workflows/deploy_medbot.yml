@@ -96,6 +96,20 @@ jobs:
             -e "ssh -o IdentitiesOnly=yes" \
             medbot/  target:"${DEPLOY_DIR}/"
 
+      - name: Build admin frontend
+        run: |
+          cd admin-frontend
+          npm install
+          npm run build
+
+      - name: Deploy admin frontend
+        run: |
+          ssh -o IdentitiesOnly=yes target "mkdir -p /var/www/medbot/admin-panel"
+          rsync -azvv --delete \
+            --no-perms --no-owner --no-group --omit-dir-times \
+            admin-frontend/dist/ target:/var/www/medbot/admin-panel/
+
+
       - name: Post-deploy (venv + deps + restart)
         run: |
           ssh -o IdentitiesOnly=yes target "bash -lc '

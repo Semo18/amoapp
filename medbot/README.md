@@ -33,6 +33,7 @@ sudo nano /etc/systemd/system/medbot.service
 
 # Конфиг .env (на сервере)
 nano /var/www/medbot/.env
+sudo nano /var/www/medbot/admin-panel/.env (для админки)
 
 Открыть unit-файл:
 
