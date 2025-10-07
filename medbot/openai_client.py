@@ -1,22 +1,24 @@
 import os, io, asyncio, time, pathlib, traceback  # стандартные модули: работа с окружением/потоками байт/асинхронностью/временем/путями/трассировкой ошибок
+import re  # для очистки/нормализации Markdown-разметки
 from typing import Optional, Tuple, List, Dict, Any  # подсказки типов для читаемости и IDE
 from aiogram.types import Message  # тип входящего сообщения из Telegram
 from aiogram import Bot  # объект Telegram-бота (чтобы отправлять сообщения/действия)
+from aiogram.enums import ChatAction  # понадобится для отправки индикатора "печатает..."
 from openai import OpenAI  # официальный клиент OpenAI API
 from storage import get_thread_id, set_thread_id  # функции сохранения/чтения ID треда (сессии) по chat_id
 from pydub import AudioSegment  # библиотека для работы со звуком (конвертации аудио)
 from repo import save_message  # функция записи сообщений в БД
 
-# 🔴 Попытка подключить Redis для межпроцессного лока; если не установлен, используем in-memory локи
+# Попытка подключить Redis для межпроцессного лока; если не установлен, используем in-memory локи
 try:
     # redis-py 5.x
-    import redis.asyncio as aioredis  # 🔴 асинхронный Redis-клиент
+    import redis.asyncio as aioredis  # асинхронный Redis-клиент
 except Exception:
     try:
         # redis-py 4.x стиль
-        from redis import asyncio as aioredis  # 🔴 альтернатива импорту
+        from redis import asyncio as aioredis  # альтернатива импорту
     except Exception:
-        aioredis = None  # 🔴 фоллбек: будем использовать локи в памяти процесса
+        aioredis = None  # фоллбек: будем использовать локи в памяти процесса
 
 # --- конфиг ---
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))  # создаём клиент OpenAI с ключом из переменных окружения
@@ -31,10 +33,10 @@ LOG_PREFIX = "[medbot]"  # префикс для сообщений в лог-ч
 # если задан отдельный токен для логов — поднимем отдельного бота один раз
 _log_bot: Optional[Bot] = Bot(LOG_BOT_TOKEN) if LOG_BOT_TOKEN else None  # создаём «бота для логов» или оставляем None
 
-# 🔴 Redis-клиент (опционально) и in-memory локи
-REDIS_URL = os.getenv("REDIS_URL", "")  # 🔴 строка подключения к Redis (если задана)
-_redis = aioredis.from_url(REDIS_URL, decode_responses=True) if (aioredis and REDIS_URL) else None  # 🔴 клиент или None
-_local_locks: Dict[str, asyncio.Lock] = {}  # 🔴 локи в памяти по thread_id
+# Redis-клиент (опционально) и in-memory локи
+REDIS_URL = os.getenv("REDIS_URL", "")  # строка подключения к Redis (если задана)
+_redis = aioredis.from_url(REDIS_URL, decode_responses=True) if (aioredis and REDIS_URL) else None  # клиент или None
+_local_locks: Dict[str, asyncio.Lock] = {}  # локи в памяти по thread_id
 
 
 # --- поддержка типов ---
@@ -42,8 +44,64 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}  # расширения,
 RETRIEVAL_EXTS = {".pdf", ".txt", ".md", ".csv", ".docx", ".pptx", ".xlsx", ".json", ".rtf", ".html", ".htm"}  # документы для поиска по файлам
 AUDIO_EXTS = {".wav", ".mp3", ".m4a", ".ogg", ".opus"}  # распространённые аудиоформаты
 
-# 🔴 статусы «активного» run — при них нельзя добавлять новые сообщения в тред
-_ACTIVE_RUN_STATUSES = {"queued", "in_progress", "requires_action", "cancelling"}  # 🔴 набор активных статусов
+# статусы «активного» run — при них нельзя добавлять новые сообщения в тред
+_ACTIVE_RUN_STATUSES = {"queued", "in_progress", "requires_action", "cancelling"}  # набор активных статусов
+
+
+# ---------- УТИЛИТЫ ДЛЯ ТАЙПИНГА И ОЧИСТКИ/НАРЕЗКИ ОТВЕТОВ ----------
+
+async def _typing_for(bot: Bot, chat_id: int, seconds: float) -> None:  # показывает "печатает..." непрерывно N секунд
+    """Поддерживаем индикатор печати нужное время, отправляя ChatAction.TYPING раз в ~4 сек."""
+    end_at = time.time() + max(0.0, seconds)  # когда прекратить
+    while time.time() < end_at:  # пока не вышло время
+        try:
+            await bot.send_chat_action(chat_id, ChatAction.TYPING)  # показать "печатает..."
+        except Exception:
+            pass  # не роняем обработку при сетевых/транзиентных ошибках
+        await asyncio.sleep(4)  # Telegram держит индикатор около 5 сек; обновляем каждые ~4 сек
+
+_MD_STRIP_PATTERNS = [  # шаблоны Markdown, которые нужно скрыть от пользователя
+    (r"\*{2}(.+?)\*{2}", r"\1"),   # **жирный** → жирный (без **)
+    (r"#{1,6}\s*", ""),            # заголовки вида ### Title → Title
+    (r"^-{3,}\s*$", ""),           # --- (горизонтальная линия) → удалить
+    (r"`{3}.*?`{3}", ""),          # код-блок ```...``` → удалить содержимое (простое поведение)
+    (r"`([^`]+)`", r"\1"),         # инлайн-код `x` → x
+]
+
+def _sanitize_markdown(text: str) -> str:  # удаляет/облегчает Markdown-разметку
+    s = text or ""  # безопасно работаем с None
+    for pat, repl in _MD_STRIP_PATTERNS:  # прогон по шаблонам
+        s = re.sub(pat, repl, s, flags=re.MULTILINE | re.DOTALL)  # замена по всему тексту
+    return s.strip()  # финальная нормализация пробелов/краёв
+
+def _split_for_delivery(text: str) -> List[str]:  # режем ответ на части: 1) 1500, 2) 2500, 3) всё остальное
+    """
+    Возвращает список частей для отправки.
+    Дополнительно страхуемся от лимита Telegram (4096 символов на сообщение):
+    если «хвост» > 4096, разобьём его на куски по 4096.
+    """
+    t = text or ""
+    parts: List[str] = []
+    if not t:
+        return parts
+
+    first = t[:1500]  # первая часть
+    rest = t[1500:]   # остаток после первой
+    if first:
+        parts.append(first)
+
+    second = rest[:2500]    # вторая часть
+    tail = rest[2500:]      # остаток после второй
+    if second:
+        parts.append(second)
+
+    if tail:
+        # третья часть — «всё, что осталось», но разбиваем по 4096, чтобы не упасть по лимиту Telegram
+        for i in range(0, len(tail), 4096):
+            parts.append(tail[i:i + 4096])
+
+    return parts
+
 
 # --- треды ---
 async def ensure_thread_choice(chat_id: int, choice: str) -> bool:  # проверяет выбор пользователя: «новый»/«продолжить»
@@ -131,60 +189,62 @@ def _first_text(messages) -> Optional[str]:  # достаёт первый те�
                     return part.text.value  # возвращаем текст
     return None  # если текста не нашли
 
-# 🔴 --- помощь: локи по thread_id ---
 
-async def _acquire_thread_lock(thread_id: str):  # 🔴 пытаемся захватить лок по треду
+# --- помощь: локи по thread_id ---
+
+async def _acquire_thread_lock(thread_id: str):  # пытаемся захватить лок по треду
     if _redis:
-        key = f"medbot:lock:thread:{thread_id}"  # 🔴 ключ лока в Redis
+        key = f"medbot:lock:thread:{thread_id}"  # ключ лока в Redis
         while True:
-            ok = await _redis.set(key, "1", ex=120, nx=True)  # 🔴 set NX + TTL
+            ok = await _redis.set(key, "1", ex=120, nx=True)  # set NX + TTL
             if ok:
-                return key  # 🔴 получили лок
-            await asyncio.sleep(0.2)  # 🔴 ждём освобождения
+                return key  # получили лок
+            await asyncio.sleep(0.2)  # ждём освобождения
     else:
-        lock = _local_locks.setdefault(thread_id, asyncio.Lock())  # 🔴 получаем/создаём лок в памяти
+        lock = _local_locks.setdefault(thread_id, asyncio.Lock())  # получаем/создаём лок в памяти
         await lock.acquire()
-        return lock  # 🔴 вернём сам лок-объект
+        return lock  # вернём сам лок-объект
 
-async def _release_thread_lock(lock_token):  # 🔴 освобождение лока
+async def _release_thread_lock(lock_token):  # освобождение лока
     if _redis and isinstance(lock_token, str):
         try:
-            await _redis.delete(lock_token)  # 🔴 снимаем ключ лока в Redis
+            await _redis.delete(lock_token)  # снимаем ключ лока в Redis
         except Exception:
             pass
     elif isinstance(lock_token, asyncio.Lock):
         try:
-            lock_token.release()  # 🔴 отпускаем лок в памяти процесса
+            lock_token.release()  # отпускаем лок в памяти процесса
         except Exception:
             pass
 
-# 🔴 --- помощь: ожидание idle и ретраи messages.create ---
 
-def _has_active_runs(runs_list) -> bool:  # 🔴 проверка: есть ли активные run’ы в треде
-    return any(getattr(r, "status", None) in _ACTIVE_RUN_STATUSES for r in runs_list.data)  # 🔴 true, если есть активные
+# --- помощь: ожидание idle и ретраи messages.create ---
 
-def _find_oldest_active(runs_list):  # 🔴 найти «самый старый» активный run (на всякий)
+def _has_active_runs(runs_list) -> bool:  # проверка: есть ли активные run’ы в треде
+    return any(getattr(r, "status", None) in _ACTIVE_RUN_STATUSES for r in runs_list.data)  # true, если есть активные
+
+def _find_oldest_active(runs_list):  # найти «самый старый» активный run (на всякий)
     actives = [r for r in runs_list.data if getattr(r, "status", None) in _ACTIVE_RUN_STATUSES]
-    return actives[-1] if actives else None  # 🔴 список приходит отсортированным по дате у OpenAI SDK (новые сверху)
+    return actives[-1] if actives else None  # список приходит отсортированным по дате у OpenAI SDK (новые сверху)
 
-async def _wait_thread_idle(thread_id: str, timeout_s: int = 60, poll_s: float = 0.4):  # 🔴 дожидаемся, пока тред будет «свободен»
-    start = time.time()  # 🔴 отметка времени
+async def _wait_thread_idle(thread_id: str, timeout_s: int = 60, poll_s: float = 0.4):  # дожидаемся, пока тред будет «свободен»
+    start = time.time()  # отметка времени
     while True:
-        runs = client.beta.threads.runs.list(thread_id=thread_id, limit=10)  # 🔴 смотрим активные run’ы
-        if not _has_active_runs(runs):  # 🔴 если активных нет — выходим
+        runs = client.beta.threads.runs.list(thread_id=thread_id, limit=10)  # смотрим активные run’ы
+        if not _has_active_runs(runs):  # если активных нет — выходим
             return
-        if time.time() - start > timeout_s:  # 🔴 таймаут ожидания
-            oldest = _find_oldest_active(runs)  # 🔴 попробуем отменить «старый» run
+        if time.time() - start > timeout_s:  # таймаут ожидания
+            oldest = _find_oldest_active(runs)  # попробуем отменить «старый» run
             if oldest:
                 try:
-                    client.beta.threads.runs.cancel(thread_id=thread_id, run_id=oldest.id)  # 🔴 мягкая отмена
+                    client.beta.threads.runs.cancel(thread_id=thread_id, run_id=oldest.id)  # мягкая отмена
                 except Exception:
                     pass
-            await asyncio.sleep(2)  # 🔴 короткая пауза после cancel
-            return  # 🔴 выходим — пусть верхний уровень решает, что делать дальше
-        await asyncio.sleep(poll_s)  # 🔴 повторная проверка чуть позже
+            await asyncio.sleep(2)  # короткая пауза после cancel
+            return  # выходим — пусть верхний уровень решает, что делать дальше
+        await asyncio.sleep(poll_s)  # повторная проверка чуть позже
 
-async def _messages_create_with_retry(thread_id: str, content, attachments=None, max_attempts: int = 3):  # 🔴 безопасная отправка сообщения с ретраями
+async def _messages_create_with_retry(thread_id: str, content, attachments=None, max_attempts: int = 3):  # безопасная отправка сообщения с ретраями
     for attempt in range(max_attempts):
         try:
             client.beta.threads.messages.create(  # добавляем сообщение пользователя в тред OpenAI
@@ -193,23 +253,24 @@ async def _messages_create_with_retry(thread_id: str, content, attachments=None,
                 content=content,
                 attachments=attachments,
             )
-            return  # 🔴 успех
+            return  # успех
         except Exception as e:
-            msg = str(getattr(e, "message", "")) or str(e)  # 🔴 текст ошибки
-            if "while a run" in msg and attempt < max_attempts - 1:  # 🔴 классическая 400 «run is active»
-                await asyncio.sleep(0.4 * (attempt + 1))  # 🔴 бэкофф
-                await _wait_thread_idle(thread_id, timeout_s=20)  # 🔴 ещё раз убеждаемся, что тред idle
+            msg = str(getattr(e, "message", "")) or str(e)  # текст ошибки
+            if "while a run" in msg and attempt < max_attempts - 1:  # классическая 400 «run is active»
+                await asyncio.sleep(0.4 * (attempt + 1))  # бэкофф
+                await _wait_thread_idle(thread_id, timeout_s=20)  # ещё раз убеждаемся, что тред idle
                 continue
-            raise  # 🔴 если другая ошибка или исчерпали попытки — пробрасываем
+            raise  # если другая ошибка или исчерпали попытки — пробрасываем
 
-# 🔴 Проверим, какой механизм лока активен (для логов / самодиагностики)
+
+# Проверим, какой механизм лока активен (для логов / самодиагностики)
 try:
     bot_for_log = _log_bot or (Bot(LOG_BOT_TOKEN) if LOG_BOT_TOKEN else None)
     if bot_for_log and LOG_CHAT_ID:
         msg = "Redis lock backend: ENABLED" if _redis else "Redis lock backend: DISABLED (using in-memory)"
-        asyncio.create_task(send_log(bot_for_log, msg))  # 🔴 отправим сообщение в лог-чат асинхронно
+        asyncio.create_task(send_log(bot_for_log, msg))  # отправим сообщение в лог-чат асинхронно
 except Exception:
-    pass  # 🔴 на случай, если лог-бот не инициализирован при старте
+    pass  # на случай, если лог-бот не инициализирован при старте
 
 
 # --- основная задача ---
@@ -260,14 +321,14 @@ async def schedule_processing(msg: Message, delay_sec: Optional[int] = None) -> 
             else:  # прочие файлы (не распознали тип)
                 content[0]["text"] = f"{base_text}\n\n(Файл {name} загружен; если нужно, укажите правильный формат: PDF/JPG и т.п.)"  # мягкая подсказка пользователю
 
-        # 🔴 —— СЕРИАЛИЗАЦИЯ ПО THREAD_ID: один писатель за раз — защищаем messages.create/run.create
-        lock_token = await _acquire_thread_lock(thread_id)  # 🔴 захватываем лок (Redis или in-memory)
+        # —— СЕРИАЛИЗАЦИЯ ПО THREAD_ID: один писатель за раз — защищаем messages.create/run.create
+        lock_token = await _acquire_thread_lock(thread_id)  # захватываем лок (Redis или in-memory)
         try:
-            # 🔴 Перед добавлением сообщения убеждаемся, что в треде нет активных run’ов
-            await _wait_thread_idle(thread_id, timeout_s=60)  # 🔴 дождаться idle или попробовать мягкую отмену «старого» run
+            # Перед добавлением сообщения убеждаемся, что в треде нет активных run’ов
+            await _wait_thread_idle(thread_id, timeout_s=60)  # дождаться idle или попробовать мягкую отмену «старого» run
 
             # 2) сообщение в тред (безопасно, с ретраями на 400 “run is active”)
-            await _messages_create_with_retry(  # 🔴 обёртка с бэкоффом и повтором на коллизию
+            await _messages_create_with_retry(  # обёртка с бэкоффом и повтором на коллизию
                 thread_id=thread_id,
                 content=content,
                 attachments=attachments,
@@ -282,7 +343,7 @@ async def schedule_processing(msg: Message, delay_sec: Optional[int] = None) -> 
             )
 
         finally:
-            await _release_thread_lock(lock_token)  # 🔴 обязательно освобождаем лок
+            await _release_thread_lock(lock_token)  # обязательно освобождаем лок
 
         # 4) мониторинг статуса (логируем смену статуса в лог-чат)
         started = time.time()  # отметка времени старта
@@ -298,7 +359,7 @@ async def schedule_processing(msg: Message, delay_sec: Optional[int] = None) -> 
             if time.time() - started > 600:  # если ждём слишком долго (таймаут 10 минут)
                 await send_log(msg.bot, f"run {run.id} timeout chat_id={chat_id}")  # логируем таймаут
                 try:
-                    client.beta.threads.runs.cancel(thread_id=thread_id, run_id=run.id)  # 🔴 мягко отменяем «долгий» run
+                    client.beta.threads.runs.cancel(thread_id=thread_id, run_id=run.id)  # мягко отменяем «долгий» run
                 except Exception:
                     pass
                 break  # выходим
@@ -306,17 +367,53 @@ async def schedule_processing(msg: Message, delay_sec: Optional[int] = None) -> 
         # 5) ответ пользователю
         if run.status == "completed":  # если ассистент успешно завершил ответ
             msgs = client.beta.threads.messages.list(thread_id=thread_id, order="desc", limit=2)  # берём свежие сообщения из треда
-            txt = _first_text(msgs)  # достаём текст ассистента
-            if txt:  # если текст есть
-                resp = await msg.answer(txt)  # отправляем его пользователю
-                save_message(  # и логируем наш исходящий ответ в БД
+            raw_txt = _first_text(msgs)  # достаём текст ассистента
+            if raw_txt:  # если текст есть
+                clean = _sanitize_markdown(raw_txt)  # убираем ###, **, --- и пр. из ответа
+                chunks = _split_for_delivery(clean)  # режем: 1500 / 2500 / остальное (с учётом лимита 4096)
+                if not chunks:
+                    chunks = [clean]  # защита на случай пустого списка
+
+                # Перед первым сообщением — 30 сек "печатает..."
+                await _typing_for(msg.bot, chat_id, 30)
+
+                # Отправляем первую часть
+                resp = await msg.answer(chunks[0])
+                save_message(  # логируем исходящее
                     chat_id=msg.chat.id,
-                    direction=1,  # 1 = исходящее
-                    text=txt,
+                    direction=1,
+                    text=chunks[0],
                     content_type="text",
                     message_id=getattr(resp, "message_id", None),
                 )
-                return  # на этом всё
+
+                # Если есть вторая часть — "печатает..." 1.5 минуты и отправка
+                if len(chunks) >= 2:
+                    await _typing_for(msg.bot, chat_id, 90)  # 1.5 минуты
+                    resp2 = await msg.answer(chunks[1])
+                    save_message(
+                        chat_id=msg.chat.id,
+                        direction=1,
+                        text=chunks[1],
+                        content_type="text",
+                        message_id=getattr(resp2, "message_id", None),
+                    )
+
+                # Если есть третья (и последующие — вдруг «хвост» > 4096), то:
+                if len(chunks) >= 3:
+                    await _typing_for(msg.bot, chat_id, 120)  # 2 минуты перед третьей частью
+                    # отправляем все оставшиеся куски (третью и далее)
+                    for i, tail_part in enumerate(chunks[2:], start=3):
+                        respN = await msg.answer(tail_part)
+                        save_message(
+                            chat_id=msg.chat.id,
+                            direction=1,
+                            text=tail_part,
+                            content_type="text",
+                            message_id=getattr(respN, "message_id", None),
+                        )
+
+                return  # завершили нормальной отправкой
 
         await msg.answer("Внутренняя ошибка обработки. Пожалуйста, повторите позже.")  # общий ответ при неудаче
         await send_log(msg.bot, f"run {run.id} finished with status={run.status} (no text) chat_id={chat_id}")  # логируем завершение без текста
