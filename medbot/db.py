@@ -3,7 +3,8 @@ import os
 from sqlalchemy import create_engine, Column, BigInteger, Integer, Text, Boolean, SmallInteger, DateTime, String, func
 from sqlalchemy.orm import sessionmaker, declarative_base
 
-DB_URL = os.getenv("DB_URL", "postgresql+psycopg2://vl:vlpass@localhost:5433/vl_admin")
+DB_URL = os.getenv("DB_URL", "postgresql+psycopg://vl:vlpass@178.62.255.113:5433/vl_admin")  # 🔴 новый драйвер
+
 
 engine = create_engine(DB_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
