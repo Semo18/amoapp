@@ -14,10 +14,14 @@ from aiogram.types import Update
 # загрузка переменных из .env
 from dotenv import load_dotenv
 
-# 🔴 используется для HTTP-запросов в amoCRM
+# используется для HTTP-запросов в amoCRM
 import aiohttp
 
-# 🔴 локальные модули проекта
+# 🔴 новое: импорт клиента OpenAI и ID ассистента из env
+from openai import OpenAI  # 🔴
+# 🔴 мы не создаём тут ассистента, только тестово «пингуем»
+
+# локальные модули проекта
 from bot import setup_handlers  # регистрация Telegram-хэндлеров
 from admin_api import router as admin_router  # REST для админки
 from repo import fetch_messages  # получение сообщений из БД
@@ -28,7 +32,7 @@ from repo import fetch_messages  # получение сообщений из Б
 
 load_dotenv()  # загружаем все переменные окружения из .env
 
-# 🔴 базовая настройка логирования
+# базовая настройка логирования
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -39,10 +43,23 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")  # токен Telegram-бота
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "secret")  # секрет вебхука
 BASE_URL = os.getenv("BASE_URL", "").rstrip("/")  # базовый URL приложения
 
+# 🔴 параметры OpenAI для самодиагностики
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # 🔴
+ASSISTANT_ID = os.getenv("ASSISTANT_ID")  # 🔴
+
+# 🔴 жёстко валидируем ключи: пусть упадёт при кривом .env
+if not BOT_TOKEN:
+    raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")  # 🔴
+if not OPENAI_API_KEY:
+    raise RuntimeError("OPENAI_API_KEY is not set")  # 🔴
+if not ASSISTANT_ID:
+    raise RuntimeError("ASSISTANT_ID is not set")  # 🔴
+
+
 # --- настройки amoCRM ---
-AMO_WEBHOOK_URL = os.getenv("AMO_WEBHOOK_URL", "")  # 🔴 адрес amoCRM webhook
-AMO_API_URL = os.getenv("AMO_API_URL", "")  # 🔴 REST API amoCRM
-AMO_ACCESS_TOKEN = os.getenv("AMO_ACCESS_TOKEN", "")  # 🔴 токен доступа API
+AMO_WEBHOOK_URL = os.getenv("AMO_WEBHOOK_URL", "")  # адрес amoCRM webhook
+AMO_API_URL = os.getenv("AMO_API_URL", "")  # REST API amoCRM
+AMO_ACCESS_TOKEN = os.getenv("AMO_ACCESS_TOKEN", "")  # токен доступа API
 AMO_ENABLED = bool(AMO_WEBHOOK_URL or AMO_API_URL)  # активна ли интеграция
 
 # --- создаём объекты Telegram SDK ---
@@ -69,9 +86,37 @@ app.add_middleware(
     allow_headers=["*"],  # все заголовки
 )
 
+
+# 🔴 самодиагностика Assistant API (быстрый «пинг»)
+@app.get("/medbot/openai-selftest")
+async def openai_selftest() -> Dict[str, Any]:
+    """
+    Проверяем связность с OpenAI:
+    1) читаем модель (лёгкий вызов)
+    2) читаем ассистента по ASSISTANT_ID
+    Возвращаем сводку для быстрых проверок curl'ом.
+    """
+    try:
+        client = OpenAI(api_key=OPENAI_API_KEY)  # 🔴
+        # лёгкий вызов на модель: проверяет ключ/сеть/SSL
+        mdl = client.models.retrieve("gpt-4o-mini")  # 🔴
+        # чтение ассистента: проверяет корректность ASSISTANT_ID
+        ast = client.beta.assistants.retrieve(ASSISTANT_ID)  # 🔴
+        return {
+            "ok": True,
+            "model": mdl.id,
+            "assistant_id": ast.id,
+            "assistant_name": getattr(ast, "name", None),
+        }
+    except Exception as exc:
+        logging.exception("OpenAI selftest failed")  # 🔴 подробный лог
+        raise HTTPException(status_code=500, detail=str(exc))  # 🔴
+
+
 # ==========================================================
 #       ГЛАВНЫЙ TELEGRAM WEBHOOK (один токен — два потока)
 # ==========================================================
+
 
 @app.post("/medbot/webhook")
 async def telegram_webhook(request: Request) -> Dict[str, Any]:

@@ -13,6 +13,7 @@ from pydub import AudioSegment  # библиотека для работы со 
 from repo import save_message  # функция записи сообщений в БД
 from texts import ACK_DELAYED  # 🔴 стандартное сообщение-врач (из texts.py)
 from storage import should_ack
+import logging  # 🔴 добавить наверху, если нет
 
 
 # Загружаем .env из каталога medbot (где лежит этот файл)
@@ -66,7 +67,19 @@ AUDIO_EXTS = {".wav", ".mp3", ".m4a", ".ogg", ".opus"}  # распростран
 _ACTIVE_RUN_STATUSES = {"queued", "in_progress", "requires_action", "cancelling"}  # набор активных статусов
 
 
+# 🔴 хелпер: красиво логировать ошибки Run
+def _log_run_error(run) -> None:
+    """Если Run упал, логируем last_error с типом/сообщением."""
+    try:
+        err = getattr(run, "last_error", None)
+        if err:
+            tp = getattr(err, "type", "unknown")
+            msg = getattr(err, "message", "")
+            logging.error("OpenAI run error: type=%s msg=%s", tp, msg)
+    except Exception:
+        pass  # логирование не должно валить поток
 # ---------- УТИЛИТЫ ДЛЯ ТАЙПИНГА И ОЧИСТКИ/НАРЕЗКИ ОТВЕТОВ ----------
+
 
 async def _typing_for(bot: Bot, chat_id: int, seconds: float) -> None:  # показывает "печатает..." непрерывно N секунд
     """Поддерживаем индикатор печати нужное время, отправляя ChatAction.TYPING раз в ~4 сек."""
@@ -397,6 +410,12 @@ async def schedule_processing(msg: Message, delay_sec: Optional[int] = None) -> 
                 tool_choice="auto",  # ассистент сам решает, какие инструменты использовать
             )
 
+            # 🔴 логируем факт старта Run
+            await send_log(
+                msg.bot,
+                f"🚀 Run {run.id} started for chat_id={chat_id}, thread={thread_id}"
+            )
+
         finally:
             await _release_thread_lock(lock_token)  # обязательно освобождаем лок
 
@@ -409,6 +428,8 @@ async def schedule_processing(msg: Message, delay_sec: Optional[int] = None) -> 
                 await send_log(msg.bot, f"run {run.id} status={run.status} chat_id={chat_id}")  # шлём лог о смене статуса
                 last_status = run.status  # запоминаем новый статус
             if run.status in {"completed", "failed", "requires_action", "cancelled", "expired"}:  # если выполнение завершилось
+                if run.status != "completed":
+                    _log_run_error(run)  # 🔴 логируем last_error, если неуспех
                 break  # выходим из цикла
             await asyncio.sleep(2)  # ждём 2 секунды перед следующей проверкой
             if time.time() - started > 600:  # если ждём слишком долго (таймаут 10 минут)
@@ -472,6 +493,7 @@ async def schedule_processing(msg: Message, delay_sec: Optional[int] = None) -> 
 
         await msg.answer("Внутренняя ошибка обработки. Пожалуйста, повторите позже.")  # общий ответ при неудаче
         await send_log(msg.bot, f"run {run.id} finished with status={run.status} (no text) chat_id={chat_id}")  # логируем завершение без текста
+        _log_run_error(run)  # 🔴 логируем last_error в любом случае
         save_message(  # фиксируем системное исходящее сообщение об ошибке
             chat_id=msg.chat.id,
             direction=1,
