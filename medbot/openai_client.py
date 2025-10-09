@@ -12,6 +12,7 @@ from storage import get_thread_id, set_thread_id  # функции сохран�
 from pydub import AudioSegment  # библиотека для работы со звуком (конвертации аудио)
 from repo import save_message  # функция записи сообщений в БД
 from texts import ACK_DELAYED  # 🔴 стандартное сообщение-врач (из texts.py)
+from storage import should_ack
 
 
 # Загружаем .env из каталога medbot (где лежит этот файл)
@@ -317,17 +318,19 @@ async def schedule_processing(msg: Message, delay_sec: Optional[int] = None) -> 
         thread_id = get_or_create_thread(chat_id)  # берём существующий тред или создаём новый
 
 
-            # 🔴 Перед запуском анализа показываем 20 сек "печатает...", потом ACK
-        await _typing_for(msg.bot, chat_id, 20)          # врач «печатает» 20 секунд
-        await asyncio.sleep(20)                          # пауза перед отправкой
-        ack_msg = await msg.answer(ACK_DELAYED)          # отправляем ACK из texts.py
-        save_message(                                    # логируем как исходящее
-            chat_id=chat_id,
-            direction=1,
-            text=ACK_DELAYED,
-            content_type="system",
-            message_id=getattr(ack_msg, "message_id", None),
-        )
+            # Отправляем ACK (но только если с последнего прошло > 1 часа)
+            # Перед запуском анализа показываем 20 сек "печатает...", потом ACK
+        if should_ack(chat_id, cooldown_sec=3600):    
+            await _typing_for(msg.bot, chat_id, 20)          # врач «печатает» 20 секунд
+            await asyncio.sleep(20)                          # пауза перед отправкой
+            ack_msg = await msg.answer(ACK_DELAYED)          # отправляем ACK из texts.py
+            save_message(                                    # логируем как исходящее
+                chat_id=chat_id,
+                direction=1,
+                text=ACK_DELAYED,
+                content_type="system",
+                message_id=getattr(ack_msg, "message_id", None),
+            )
 
         base_text = msg.text or "Проанализируй вложение и ответь как медицинский консультант."  # текст запроса по умолчанию
 

@@ -84,21 +84,10 @@ async def any_message(msg: Message, bot: Bot):
         message_id=getattr(msg, "message_id", None),  # телеграмный message_id (если нужен)
     )
 
-    # 1) авто-квиток — только один раз на чат (раз в 1 час тишины)
-    if should_ack(chat_id, cooldown_sec=3600):  # проверяем, нужно ли отправить авто-ответ
-        resp = await msg.answer(ACK_DELAYED)  # отправляем сообщение-заглушку (например: "Ваш запрос принят...")
-        save_message(  # логируем наш авто-ответ как исходящее системное сообщение
-            chat_id=chat_id,
-            direction=1,  # 1 = исходящее (наш ответ)
-            text=ACK_DELAYED,
-            content_type="system",
-            message_id=getattr(resp, "message_id", None),
-        )
-
-    # 2) "три точки" за минуту до ответа (или сразу, если задержка < 60)
+    # 1) "три точки" за минуту до ответа (или сразу, если задержка < 60)
     start_in = max(0, DELAY_SEC - 60)  # когда начать показывать "печатает..."
     typing_duration = min(60, DELAY_SEC)  # сколько секунд показывать
     asyncio.create_task(_typing_later(bot, chat_id, start_in, typing_duration))  # запускаем задачу показа индикатора печати
 
-    # 3) запускаем обработку В ФОНЕ (не блокируем хендлер)
+    # 2) запускаем обработку В ФОНЕ (не блокируем хендлер)
     asyncio.create_task(schedule_processing(msg, delay_sec=DELAY_SEC))  # отправляем сообщение на обработку OpenAI с задержкой
