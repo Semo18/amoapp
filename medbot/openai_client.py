@@ -316,10 +316,9 @@ async def schedule_processing(msg: Message, delay_sec: Optional[int] = None) -> 
 
         chat_id = msg.chat.id
         thread_id = get_or_create_thread(chat_id)
-        await send_log(msg.bot, f"DEBUG ACK check={should_ack(chat_id, 3600)} chat_id={chat_id}")
 
         # 🔴 Отправляем ACK (но только если не отправляли в течение последнего часа)
-        if should_ack(chat_id, cooldown_sec=60):  # раз в минуту
+        if should_ack(chat_id, cooldown_sec=3600):
             # Показать "печатает..." 20 секунд
             await _typing_for(msg.bot, chat_id, 20)
 
@@ -488,4 +487,3 @@ async def schedule_processing(msg: Message, delay_sec: Optional[int] = None) -> 
             text="Внутренняя ошибка обработки. Пожалуйста, повторите позже.",
             content_type="system",
         )
-# test
