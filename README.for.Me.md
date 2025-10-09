@@ -58,7 +58,8 @@ Host github-amoapp
   UseKeychain yes
   IdentitiesOnly yes
 
-🧰 Работа с сервером
+
+# Работа с сервером
 
 Проверить содержимое:
 
@@ -80,7 +81,7 @@ sudo systemctl restart amoapp.service
 
 systemctl list-timers | grep amoapp-worker || true
 
-🧾 Переменные окружения и конфиги
+# Переменные окружения и конфиги
 
 Редактировать конфиг:
 
@@ -101,12 +102,12 @@ curl -s -H "Authorization: Bearer $AMO_TOKEN" \
 | jq '._embedded.pipelines[] | {id, name}'
 
 
-Получить ID нужной воронки по имени:
+Получить ID нужной воронки по имени (подставить скои значения вместо ACCESS_TOKEN и ):
 
-curl -s -H "Authorization: Bearer $AMO_TOKEN" \
-  "https://$AMO_DOMAIN/api/v4/leads/pipelines?limit=250" \
-| jq -r '._embedded.pipelines[]
-         | select(.name=="Рассрочка Москва (МО)") | .id'
+curl -H "Authorization: Bearer <ACCESS_TOKEN>" \
+     https://voennik365.amocrm.ru/api/v4/leads/pipelines | jq '.["_embedded"].pipelines[] | {id: .id, name: .name}'
+
+
 
 🗄️ Работа с PostgreSQL
 Подключение к базе внутри контейнера
