@@ -5,22 +5,19 @@ SSH-доступ:
 
 ssh amocrm-server
 
-🔑 Как зайти под пользователем deployer
+# Как зайти под пользователем deployer
 ssh deployer@amocrm-server
 
 💻 Локальная разработка на Mac
 📂 Путь к проекту (iCloud)
 cd ~/Library/Mobile\ Documents/com~apple~CloudDocs/amoapp
 
-⚙️ GitHub CLI и переменные окружения
+# GitHub CLI и переменные окружения
 
 Список окружений:
-
 gh api repos/:owner/:repo/environments | jq '.environments[].name'
 
-
 Секреты окружения dev:
-
 gh secret list --env dev
 
 
@@ -28,20 +25,24 @@ gh secret list --env dev
 
 gh variable list --env dev
 
-🚀 Отправка кода в репозиторий
+# Отправка кода в репозиторий
 git add .
 git commit -m "workflow test"   # произвольный комментарий
 git push
 
-🔐 SSH-ключи (по устройствам)
-Устройство	Приватный ключ	Публичный ключ
-iMac GitHub Deploy	~/.ssh/amoapp_ci	amoapp_ci.pub
-Mac Air GitHub Deploy	~/.ssh/amoapp_laptop	amoapp_laptop.pub
-iMac → сервер	~/.ssh/amoapp_imac	amoapp_imac.pub
-Mac Air → сервер	~/.ssh/amoapp_air	amoapp_air.pub
-DigitalOcean	~/.ssh/id_rsa_digitalocean	id_rsa_digitalocean.pub
+# SSH-ключи (по устройствам)
+Устройство	            Приватный ключ	            Публичный ключ
+iMac GitHub Deploy	    ~/.ssh/amoapp_ci	          amoapp_ci.pub
+Mac Air GitHub Deploy	  ~/.ssh/amoapp_laptop	      amoapp_laptop.pub
+iMac → сервер	          ~/.ssh/amoapp_imac	        amoapp_imac.pub
+Mac Air → сервер	      ~/.ssh/amoapp_air	          amoapp_air.pub
+DigitalOcean	          ~/.ssh/id_rsa_digitalocean	id_rsa_digitalocean.pub
 
-Проверить ключи:
+
+# Бот жив по адресу
+https://amo.ap-development.com/medbot/health
+
+# Проверить ключи:
 
 ls -la ~/.ssh
 cat ~/.ssh/config
