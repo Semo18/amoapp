@@ -61,6 +61,9 @@ Host github-amoapp
 
 # Работа с сервером
 
+Файл системной настройки 
+ sudo systemctl edit medbot.service
+
 Проверить содержимое:
 
 ls -la /var/www/app
