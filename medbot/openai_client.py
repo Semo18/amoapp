@@ -1,3 +1,4 @@
+# openai_client.py
 import os, io, asyncio, time, traceback  # стандартные модули: работа с окружением/потоками байт/асинхронностью/временем/путями/трассировкой ошибок
 import re  # для очистки/нормализации Markdown-разметки
 from pathlib import Path
@@ -10,6 +11,8 @@ from openai import OpenAI  # официальный клиент OpenAI API
 from storage import get_thread_id, set_thread_id  # функции сохранения/чтения ID треда (сессии) по chat_id
 from pydub import AudioSegment  # библиотека для работы со звуком (конвертации аудио)
 from repo import save_message  # функция записи сообщений в БД
+from texts import ACK_DELAYED  # 🔴 стандартное сообщение-врач (из texts.py)
+
 
 # Загружаем .env из каталога medbot (где лежит этот файл)
 DOTENV_PATH = Path(__file__).resolve().parent / ".env"  # путь к .env рядом с кодом
@@ -313,15 +316,12 @@ async def schedule_processing(msg: Message, delay_sec: Optional[int] = None) -> 
         chat_id = msg.chat.id  # ID чата (для логов и привязки сессии)
         thread_id = get_or_create_thread(chat_id)  # берём существующий тред или создаём новый
 
-                # 🔴 Перед запуском анализа показываем 20 сек "печатает..." и отправляем ACK
-        ACK_DELAYED = (
-            "Добрый день! Пишет врач, мне необходимо ознакомиться с вашим вопросом. "
-            "Я отвечу Вам в ближайшее время."
-        )
-        await _typing_for(msg.bot, chat_id, 20)  # 20 секунд индикатор "печатает..."
 
-        ack_msg = await msg.answer(ACK_DELAYED)  # отправляем предварительное сообщение пользователю
-        save_message(  # логируем его как исходящее
+            # 🔴 Перед запуском анализа показываем 20 сек "печатает...", потом ACK
+        await _typing_for(msg.bot, chat_id, 20)          # врач «печатает» 20 секунд
+        await asyncio.sleep(20)                          # пауза перед отправкой
+        ack_msg = await msg.answer(ACK_DELAYED)          # отправляем ACK из texts.py
+        save_message(                                    # логируем как исходящее
             chat_id=chat_id,
             direction=1,
             text=ACK_DELAYED,
@@ -421,7 +421,7 @@ async def schedule_processing(msg: Message, delay_sec: Optional[int] = None) -> 
                     chunks = [clean]  # защита на случай пустого списка
 
                 # Перед первым сообщением — 60 сек "печатает..."
-                await _typing_for(msg.bot, chat_id, 60)
+                await _typing_for(msg.bot, chat_id, 240) # 4 мин (240 сек)
 
                 # Отправляем первую часть
                 resp = await msg.answer(chunks[0])
@@ -435,7 +435,7 @@ async def schedule_processing(msg: Message, delay_sec: Optional[int] = None) -> 
 
                 # Если есть вторая часть — "печатает..." 1.5 минуты и отправка
                 if len(chunks) >= 2:
-                    await _typing_for(msg.bot, chat_id, 90)  # 1.5 минуты
+                    await _typing_for(msg.bot, chat_id, 300)  # 5 мин (300 сек)
                     resp2 = await msg.answer(chunks[1])
                     save_message(
                         chat_id=msg.chat.id,
@@ -447,7 +447,7 @@ async def schedule_processing(msg: Message, delay_sec: Optional[int] = None) -> 
 
                 # Если есть третья (и последующие — вдруг «хвост» > 4096), то:
                 if len(chunks) >= 3:
-                    await _typing_for(msg.bot, chat_id, 120)  # 2 минуты перед третьей частью
+                    await _typing_for(msg.bot, chat_id, 180)  # 3 минуты перед третьей частью
                     # отправляем все оставшиеся куски (третью и далее)
                     for i, tail_part in enumerate(chunks[2:], start=3):
                         respN = await msg.answer(tail_part)

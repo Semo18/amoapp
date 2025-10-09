@@ -1,63 +1,54 @@
-# Разработка в АМО (Тестовое поле - сумма рассрочки)Заходим на сервер Интеграций АМОсрм: 
+🩺 MedBot / AmoApp — Поле разработки и деплоя
+📡 Подключение к серверу интеграций
+
+SSH-доступ:
+
 ssh amocrm-server
 
-# Как зайти под deployer
-На своём Mac просто:
+🔑 Как зайти под пользователем deployer
 ssh deployer@amocrm-server
 
-# Путь к проекту на Icloude 
+💻 Локальная разработка на Mac
+📂 Путь к проекту (iCloud)
 cd ~/Library/Mobile\ Documents/com~apple~CloudDocs/amoapp
 
-# Как посмотреть конфиг через CLI (опционально)
-# список окружений
+⚙️ GitHub CLI и переменные окружения
+
+Список окружений:
+
 gh api repos/:owner/:repo/environments | jq '.environments[].name'
 
-# секреты окружения dev (имена)
+
+Секреты окружения dev:
+
 gh secret list --env dev
 
-# переменные окружения dev (имена и значения)
+
+Переменные окружения dev (имена + значения):
+
 gh variable list --env dev
 
-
-
-# Отправить проект в репозиторий: 
+🚀 Отправка кода в репозиторий
 git add .
-git commit -m 'workflow test' (в кавычках произвльное название)
+git commit -m "workflow test"   # произвольный комментарий
 git push
 
+🔐 SSH-ключи (по устройствам)
+Устройство	Приватный ключ	Публичный ключ
+iMac GitHub Deploy	~/.ssh/amoapp_ci	amoapp_ci.pub
+Mac Air GitHub Deploy	~/.ssh/amoapp_laptop	amoapp_laptop.pub
+iMac → сервер	~/.ssh/amoapp_imac	amoapp_imac.pub
+Mac Air → сервер	~/.ssh/amoapp_air	amoapp_air.pub
+DigitalOcean	~/.ssh/id_rsa_digitalocean	id_rsa_digitalocean.pub
 
-# Ключи SSH 
+Проверить ключи:
 
-# Деплой на Imac в GitHub (Через Dev)
--rw-------@  1 semo  staff   399 Sep  2 09:50 amoapp_ci
--rw-r--r--@  1 semo  staff    91 Sep  2 09:50 amoapp_ci.pub
-
-# Деплой на Mac Air в GitHub (Через Dev)
--rw-------@  1 sergeymonichev  staff   399  2 сен 10:05 amoapp_laptop
--rw-r--r--@  1 sergeymonichev  staff    95  2 сен 10:05 amoapp_laptop.pub
-
-# Подключение к серверу локальных компьютеров на Imac
--rw-------@  1 semo  staff   444 Sep  1 16:13 amoapp_imacы
--rw-r--r--@  1 semo  staff    93 Sep  1 16:13 amoapp_imac.pub
-
-# Подключение к серверу локальных компьютеров на Mac Air
--rw-------@  1 sergeymonichev  staff   444  1 сен 16:21 amoapp_air
--rw-r--r--@  1 sergeymonichev  staff    92  1 сен 16:21 amoapp_air.pub
-
-# Подключение к https://cloud.digitalocean.com/droplets/515653766/graphs?i=decaa2&period=hour
--rw-------@  1 semo  staff  3434 Nov  7  2024 id_rsa_digitalocean
--rw-r--r--@  1 semo  staff   753 Nov  7  2024 id_rsa_digitalocean.pub
-
-# Найти ssh ключ
 ls -la ~/.ssh
-
-cat ~/.ssh/amoapp_imac (последнее имя нужного ключа)
-
-Зайти в config
 cat ~/.ssh/config
 
-# Команда коррекции агента (пример)
-cat >> ~/.ssh/config <<'CFG'
+
+Пример записи в config:
+
 Host github-amoapp
   HostName github.com
   User git
@@ -66,47 +57,201 @@ Host github-amoapp
   UseKeychain yes
   IdentitiesOnly yes
 
+🧰 Работа с сервером
 
-# Работа с comfig (на сервере)
-Редактировать: 
-sudo nano /etc/amo-calc.env
+Проверить содержимое:
 
-Проверить: 
-cat /etc/amo-calc.env
-
-
-# РАБОТА НА СЕРВЕРЕ
-Проверить содержимое на сервере 
-# где наш код:
 ls -la /var/www/app
 ls -la /var/www/app/amoapp
 
-# кто владелец:
+
+Посмотреть владельца:
+
 stat /var/www/app/amoapp/run_worker.sh
 
-# Перезагрузить сервис
-sudo systemctl restart amoapp.service (это именно калькулятор рассрочки)
+
+Перезапустить сервис:
+
+sudo systemctl restart amoapp.service
 
 
+Посмотреть таймеры:
 
-# В ПРОЕКТЕ 
-Посмотреть таймер 
 systemctl list-timers | grep amoapp-worker || true
 
-# Как узнать PIPELINE_ID (ID воронки)
+🧾 Переменные окружения и конфиги
 
-На сервере уже есть токен и домен — просто выпишем все воронки и отфильтруем по имени:
+Редактировать конфиг:
+
+sudo nano /etc/amo-calc.env
+
+
+Проверить содержимое:
+
+cat /etc/amo-calc.env
+
+🧩 AmoCRM API
+
+Получить ID всех воронок:
 
 set -a; source /etc/amo-calc.env; set +a
-
-# посмотреть все воронки (id + name)
 curl -s -H "Authorization: Bearer $AMO_TOKEN" \
   "https://$AMO_DOMAIN/api/v4/leads/pipelines?limit=250" \
 | jq '._embedded.pipelines[] | {id, name}'
 
-# вытащить ID нужной воронки по точному имени
+
+Получить ID нужной воронки по имени:
+
 curl -s -H "Authorization: Bearer $AMO_TOKEN" \
   "https://$AMO_DOMAIN/api/v4/leads/pipelines?limit=250" \
 | jq -r '._embedded.pipelines[]
          | select(.name=="Рассрочка Москва (МО)") | .id'
 
+🗄️ Работа с PostgreSQL
+Подключение к базе внутри контейнера
+docker exec -it vl_admin_pg psql -U vl -d vl_admin
+
+Основные команды psql
+Цель	Команда
+Список баз	\l
+Подключиться к базе	\c vl_admin
+Список таблиц	\dt
+Структура таблицы	\d users или \d messages
+Показать записи	SELECT * FROM users LIMIT 10;
+Подсчитать записи	SELECT COUNT(*) FROM messages;
+Выйти	\q
+Расширенные примеры
+
+Последние 20 сообщений:
+
+SELECT id, chat_id, direction, created_at, LEFT(text, 200) AS preview
+FROM messages
+ORDER BY created_at DESC
+LIMIT 20;
+
+
+Сообщения конкретного пользователя:
+
+SELECT id, direction, created_at, text
+FROM messages
+WHERE chat_id = 7541841215
+ORDER BY created_at DESC
+LIMIT 20 OFFSET 0;
+
+
+Сводка за сегодня:
+
+SELECT
+  COUNT(*) AS messages_total,
+  SUM((direction=0)::int) AS messages_in,
+  SUM((direction=1)::int) AS messages_out
+FROM messages
+WHERE created_at >= CURRENT_DATE;
+
+💾 Бэкап и восстановление БД
+
+Создать папку:
+
+mkdir -p /var/www/medbot/backups
+
+
+Сделать бэкап:
+
+docker exec -i vl_admin_pg pg_dump -U vl -d vl_admin | \
+gzip > /var/www/medbot/backups/vl_admin_$(date +%F_%H%M).sql.gz
+
+
+Просмотреть бэкапы:
+
+ls -lh /var/www/medbot/backups
+
+
+Восстановить из дампа:
+
+gunzip -c /var/www/medbot/backups/vl_admin_2025-10-06_1600.sql.gz | \
+docker exec -i vl_admin_pg psql -U vl -d vl_admin
+
+
+Просмотр логов Postgres:
+
+docker logs vl_admin_pg --tail=200 -f
+
+🧪 Локальное тестирование
+Запуск backend:
+uvicorn app:app --host 127.0.0.1 --port 8011
+
+
+Проверка API:
+
+curl -sS http://127.0.0.1:8011/health
+curl -sS http://127.0.0.1:8011/admin-api/chats
+
+Запуск frontend:
+cd medbot/admin-frontend
+npm install
+npm run dev
+
+
+Открыть в браузере:
+
+http://localhost:5173/
+
+🧱 Отладка CORS и API
+
+Если в браузере появляется ошибка:
+
+Access to fetch ... has been blocked by CORS policy
+
+
+→ Проверь, что в app.py добавлено:
+
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "https://amo.ap-development.com",
+    ],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+🔍 Полезные проверки
+
+Проверить активные процессы:
+
+ps aux | grep uvicorn
+
+
+Проверить nginx:
+
+sudo nginx -t && sudo systemctl reload nginx
+
+
+Проверить сервисы:
+
+sudo systemctl status medbot.service
+sudo journalctl -u medbot.service -n 100 --no-pager
+
+✅ Краткий чеклист перед деплоем
+
+Проверить .env — актуальные токены и DB_URL.
+
+Выполнить git pull origin main.
+
+Перезапустить сервис:
+
+sudo systemctl restart medbot.service
+
+
+Проверить:
+
+/health отвечает {"status":"ok"}
+
+/admin-api/chats возвращает список.
+
+Открыть панель:
+
+https://amo.ap-development.com/medbot/admin/
