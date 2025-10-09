@@ -91,3 +91,4 @@ async def any_message(msg: Message, bot: Bot):
 
     # 2) запускаем обработку В ФОНЕ (не блокируем хендлер)
     asyncio.create_task(schedule_processing(msg, delay_sec=DELAY_SEC))  # отправляем сообщение на обработку OpenAI с задержкой
+    #Тест на деплой 
