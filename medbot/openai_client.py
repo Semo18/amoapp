@@ -488,3 +488,4 @@ async def schedule_processing(msg: Message, delay_sec: Optional[int] = None) -> 
             text="Внутренняя ошибка обработки. Пожалуйста, повторите позже.",
             content_type="system",
         )
+# test
