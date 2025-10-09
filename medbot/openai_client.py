@@ -314,17 +314,23 @@ async def schedule_processing(msg: Message, delay_sec: Optional[int] = None) -> 
         if delay > 0:  # если нужно подождать
             await asyncio.sleep(delay)  # ждём указанное количество секунд
 
-        chat_id = msg.chat.id  # ID чата (для логов и привязки сессии)
-        thread_id = get_or_create_thread(chat_id)  # берём существующий тред или создаём новый
+        chat_id = msg.chat.id
+        thread_id = get_or_create_thread(chat_id)
+        await send_log(msg.bot, f"DEBUG ACK check={should_ack(chat_id, 3600)} chat_id={chat_id}")
 
+        # 🔴 Отправляем ACK (но только если не отправляли в течение последнего часа)
+        if should_ack(chat_id, cooldown_sec=60):  # раз в минуту
+            # Показать "печатает..." 20 секунд
+            await _typing_for(msg.bot, chat_id, 20)
 
-            # Отправляем ACK (но только если с последнего прошло > 1 часа)
-            # Перед запуском анализа показываем 20 сек "печатает...", потом ACK
-        if should_ack(chat_id, cooldown_sec=3600):    
-            await _typing_for(msg.bot, chat_id, 20)          # врач «печатает» 20 секунд
-            await asyncio.sleep(20)                          # пауза перед отправкой
-            ack_msg = await msg.answer(ACK_DELAYED)          # отправляем ACK из texts.py
-            save_message(                                    # логируем как исходящее
+            # Теперь реально ждём 20 секунд (даём пользователю визуально подождать)
+            await asyncio.sleep(20)
+
+            # 🚀 Отправляем сообщение из texts.py
+            ack_msg = await msg.answer(ACK_DELAYED)
+
+            # Логируем сообщение как исходящее
+            save_message(
                 chat_id=chat_id,
                 direction=1,
                 text=ACK_DELAYED,
