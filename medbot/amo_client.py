@@ -77,85 +77,62 @@ async def refresh_access_token() -> str:
 #      🔧 СОЗДАНИЕ КОНТАКТА + СДЕЛКИ
 # =======================================
 
-async def create_lead_in_amo(chat_id: int, username: str) -> Optional[int]:
-    """
-    🔴 Создаёт контакт и сделку в amoCRM, если их ещё нет.
-    Возвращает ID сделки (lead_id) или None при ошибке.
-    """
+# 🔁 создание сделки и контакта
+async def create_lead_in_amo(chat_id: int, username: str) -> str | None:
+    """Создаёт сделку и контакт в amoCRM, возвращает lead_id."""
     access_token = os.getenv("AMO_ACCESS_TOKEN")
     if not access_token:
-        logging.warning("⚠️ No AMO_ACCESS_TOKEN in environment")
+        logging.warning("⚠️ No AMO_ACCESS_TOKEN in env")
         return None
 
-    # если сделка уже есть — не дублируем
-    existing_lead = get_lead_id(chat_id)
-    if existing_lead:
-        logging.info(f"♻️ Lead already exists for chat_id={chat_id}: {existing_lead}")
-        return int(existing_lead)
-
     try:
-        timeout = aiohttp.ClientTimeout(total=10)
-        async with aiohttp.ClientSession(timeout=timeout) as s:
-            headers = {
-                "Authorization": f"Bearer {access_token}",
-                "Content-Type": "application/json",
-            }
-
-            # --- создаём контакт ---
-            contact_payload = {"name": username or f"Telegram {chat_id}"}
+        async with aiohttp.ClientSession() as s:
+            # 🔹 создаём контакт
+            contact = {"name": username or f"Telegram {chat_id}"}
             async with s.post(
                 f"{AMO_API_URL}/api/v4/contacts",
-                headers=headers,
-                json=[contact_payload],
-            ) as contact_resp:
-                if contact_resp.status == 401:
-                    # токен устарел → обновляем и повторяем
-                    logging.warning("⚠️ Token expired during contact creation, refreshing...")
-                    await refresh_access_token()
-                    return await create_lead_in_amo(chat_id, username)
-
-                if contact_resp.status != 200:
-                    err = await contact_resp.text()
-                    logging.warning(f"⚠️ Contact creation failed [{contact_resp.status}]: {err}")
+                headers={"Authorization": f"Bearer {access_token}"},
+                json=[contact],
+            ) as r:
+                txt = await r.text()
+                logging.info(f"📡 Contact resp [{r.status}]: {txt}")
+                if r.status != 200:
+                    if r.status == 401:
+                        logging.warning("⚠️ Token expired during contact creation — refreshing...")
+                        await refresh_access_token()
+                        return await create_lead_in_amo(chat_id, username)
+                    logging.warning(f"❌ Contact creation failed [{r.status}]: {txt}")
                     return None
+                res = await r.json()
+                contact_id = res[0]["id"]
 
-                contact_data = await contact_resp.json()
-                contact_id = contact_data[0]["id"]
-
-            # --- создаём сделку ---
-            lead_payload = {
+            # 🔹 создаём сделку
+            lead = {
                 "name": f"Новый запрос из Telegram ({username})",
                 "pipeline_id": int(AMO_PIPELINE_ID),
                 "_embedded": {"contacts": [{"id": contact_id}]},
             }
-
             async with s.post(
                 f"{AMO_API_URL}/api/v4/leads",
-                headers=headers,
-                json=[lead_payload],
-            ) as lead_resp:
-                if lead_resp.status == 401:
-                    logging.warning("⚠️ Token expired during lead creation, refreshing...")
+                headers={"Authorization": f"Bearer {access_token}"},
+                json=[lead],
+            ) as r:
+                txt = await r.text()
+                logging.info(f"📡 Lead resp [{r.status}]: {txt}")
+                if r.status == 401:
+                    logging.warning("⚠️ Token expired during lead creation — refreshing...")
                     await refresh_access_token()
                     return await create_lead_in_amo(chat_id, username)
-
-                if lead_resp.status != 200:
-                    err = await lead_resp.text()
-                    logging.warning(f"❌ Lead creation failed [{lead_resp.status}]: {err}")
+                if r.status != 200:
+                    logging.warning(f"❌ Lead creation failed [{r.status}]: {txt}")
                     return None
-
-                lead_data = await lead_resp.json()
-                lead_id = lead_data[0]["id"]
-
-                # 🔴 сохраняем связь chat_id → lead_id в Redis
-                set_lead_id(chat_id, lead_id)
-
+                data = await r.json()
+                lead_id = data[0]["id"]
                 logging.info(f"✅ Created amoCRM lead {lead_id} for chat_id={chat_id}")
                 return lead_id
 
-    except aiohttp.ClientError as e:
-        logging.warning(f"⚠️ Network error in create_lead_in_amo: {e}")
-        return None
     except Exception as e:
         logging.warning(f"⚠️ Exception in create_lead_in_amo: {e}")
+        import traceback
+        logging.warning(traceback.format_exc())
         return None
