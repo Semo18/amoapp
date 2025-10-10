@@ -1,9 +1,23 @@
 # db.py
 import os
-from sqlalchemy import create_engine, Column, BigInteger, Integer, Text, Boolean, SmallInteger, DateTime, String, func
+from sqlalchemy import (
+    create_engine,
+    Column,
+    BigInteger,
+    Integer,
+    Text,
+    Boolean,
+    SmallInteger,
+    DateTime,
+    String,
+    func,
+)
 from sqlalchemy.orm import sessionmaker, declarative_base
 
-DB_URL = os.getenv("DB_URL", "postgresql+psycopg://vl:vlpass@178.62.255.113:5433/vl_admin")  # 🔴 новый драйвер
+# Больше не хардкодим креды; ожидаем DB_URL в окружении # 🔴
+DB_URL = os.getenv("DB_URL", "")  # 🔴
+if not DB_URL:  # 🔴 жёсткая валидация для безопасности
+    raise RuntimeError("DB_URL is not set")  # 🔴
 
 
 engine = create_engine(DB_URL, pool_pre_ping=True)

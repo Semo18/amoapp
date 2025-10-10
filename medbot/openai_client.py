@@ -1,19 +1,26 @@
 # openai_client.py
-import os, io, asyncio, time, traceback  # стандартные модули: работа с окружением/потоками байт/асинхронностью/временем/путями/трассировкой ошибок
+import os, io, asyncio, time, traceback  # стандартные модули
 import re  # для очистки/нормализации Markdown-разметки
 from pathlib import Path
 from dotenv import load_dotenv
-from typing import Optional, Tuple, List, Dict, Any  # подсказки типов для читаемости и IDE
+from typing import Optional, Tuple, List, Dict, Any
 from aiogram.types import Message  # тип входящего сообщения из Telegram
 from aiogram import Bot  # объект Telegram-бота (чтобы отправлять сообщения/действия)
 from aiogram.enums import ChatAction  # понадобится для отправки индикатора "печатает..."
 from openai import OpenAI  # официальный клиент OpenAI API
-from storage import get_thread_id, set_thread_id  # функции сохранения/чтения ID треда (сессии) по chat_id
+from storage import get_thread_id, set_thread_id  # функции сохранения/чтения
 from pydub import AudioSegment  # библиотека для работы со звуком (конвертации аудио)
 from repo import save_message  # функция записи сообщений в БД
 from texts import ACK_DELAYED  # 🔴 стандартное сообщение-врач (из texts.py)
 from storage import should_ack
-import logging  # 🔴 добавить наверху, если нет
+import logging  # 🔴
+from constants import (  # 🔴 централизованные константы
+    TELEGRAM_TYPING_REFRESH_SEC,
+    SPLIT_FIRST_LIMIT,
+    SPLIT_SECOND_LIMIT,
+    TELEGRAM_TEXT_LIMIT,
+    ACTIVE_RUN_STATUSES,
+)
 
 
 # Загружаем .env из каталога medbot (где лежит этот файл)
@@ -40,13 +47,15 @@ except Exception:
         aioredis = None  # фоллбек: будем использовать локи в памяти процесса
 
 # --- конфиг ---
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))  # создаём клиент OpenAI с ключом из переменных окружения
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))  # 🔴 клиент OpenAI
 ASSISTANT_ID = os.getenv("ASSISTANT_ID")  # ID настроенного ассистента в OpenAI (Assistant API)
 DELAY_SEC = int(os.getenv("REPLY_DELAY_SEC", "0"))  # базовая задержка ответа (сек), по умолчанию 0
 
 # логирование: поддержка двух режимов
-LOG_CHAT_ID = os.getenv("LOG_CHAT_ID", "") or os.getenv("ADMIN_CHAT_ID", "")  # чат для служебных логов (если задан)
-LOG_BOT_TOKEN = os.getenv("LOG_BOT_TOKEN", "")  # отдельный токен бота для логов (если хотим слать логи не основным ботом)
+LOG_CHAT_ID = (  # 🔴 чат для служебных логов
+    os.getenv("LOG_CHAT_ID", "") or os.getenv("ADMIN_CHAT_ID", "")
+)
+LOG_BOT_TOKEN = os.getenv("LOG_BOT_TOKEN", "")  # 🔴 токен бота для логов
 LOG_PREFIX = "[medbot]"  # префикс для сообщений в лог-чат
 
 # если задан отдельный токен для логов — поднимем отдельного бота один раз
@@ -59,12 +68,24 @@ _local_locks: Dict[str, asyncio.Lock] = {}  # локи в памяти по thre
 
 
 # --- поддержка типов ---
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}  # расширения, которые считаем изображениями
-RETRIEVAL_EXTS = {".pdf", ".txt", ".md", ".csv", ".docx", ".pptx", ".xlsx", ".json", ".rtf", ".html", ".htm"}  # документы для поиска по файлам
-AUDIO_EXTS = {".wav", ".mp3", ".m4a", ".ogg", ".opus"}  # распространённые аудиоформаты
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+RETRIEVAL_EXTS = {
+    ".pdf",
+    ".txt",
+    ".md",
+    ".csv",
+    ".docx",
+    ".pptx",
+    ".xlsx",
+    ".json",
+    ".rtf",
+    ".html",
+    ".htm",
+}
+AUDIO_EXTS = {".wav", ".mp3", ".m4a", ".ogg", ".opus"}
 
 # статусы «активного» run — при них нельзя добавлять новые сообщения в тред
-_ACTIVE_RUN_STATUSES = {"queued", "in_progress", "requires_action", "cancelling"}  # набор активных статусов
+_ACTIVE_RUN_STATUSES = ACTIVE_RUN_STATUSES  # 🔴 используем из constants
 
 
 # 🔴 хелпер: красиво логировать ошибки Run
@@ -81,15 +102,15 @@ def _log_run_error(run) -> None:
 # ---------- УТИЛИТЫ ДЛЯ ТАЙПИНГА И ОЧИСТКИ/НАРЕЗКИ ОТВЕТОВ ----------
 
 
-async def _typing_for(bot: Bot, chat_id: int, seconds: float) -> None:  # показывает "печатает..." непрерывно N секунд
+async def _typing_for(bot: Bot, chat_id: int, seconds: float) -> None:
     """Поддерживаем индикатор печати нужное время, отправляя ChatAction.TYPING раз в ~4 сек."""
     end_at = time.time() + max(0.0, seconds)  # когда прекратить
-    while time.time() < end_at:  # пока не вышло время
+    while time.time() < end_at:
         try:
             await bot.send_chat_action(chat_id, ChatAction.TYPING)  # показать "печатает..."
         except Exception:
             pass  # не роняем обработку при сетевых/транзиентных ошибках
-        await asyncio.sleep(4)  # Telegram держит индикатор около 5 сек; обновляем каждые ~4 сек
+        await asyncio.sleep(TELEGRAM_TYPING_REFRESH_SEC)  # 🔴
 
 _MD_STRIP_PATTERNS = [  # шаблоны Markdown, которые нужно скрыть от пользователя
     (r"\*{2}(.+?)\*{2}", r"\1"),   # **жирный** → жирный (без **)
@@ -130,20 +151,20 @@ def _split_for_delivery(text: str) -> List[str]:
     parts: List[str] = []
     remaining = t
 
-    # 🔴 Первая часть ~1500 символов (по предложению)
-    first = _safe_cut(remaining, 1500)
+    # 🔴 Первая часть по лимиту из constants
+    first = _safe_cut(remaining, SPLIT_FIRST_LIMIT)  # 🔴
     parts.append(first)
     remaining = remaining[len(first):].strip()
 
-    # 🔴 Вторая часть ~2500 символов (по предложению)
+    # 🔴 Вторая часть по лимиту из constants
     if remaining:
-        second = _safe_cut(remaining, 2500)
+        second = _safe_cut(remaining, SPLIT_SECOND_LIMIT)  # 🔴
         parts.append(second)
         remaining = remaining[len(second):].strip()
 
-    # 🔴 Остаток разбиваем кусками по 4096 (Telegram limit)
+    # 🔴 Остаток по лимиту Telegram из constants
     while remaining:
-        chunk = _safe_cut(remaining, 4096)
+        chunk = _safe_cut(remaining, TELEGRAM_TEXT_LIMIT)  # 🔴
         parts.append(chunk)
         remaining = remaining[len(chunk):].strip()
 
@@ -175,7 +196,7 @@ def get_or_create_thread(chat_id: int) -> str:  # возвращает суще�
     return th_obj.id  # и возвращаем его
 
 def _ext(name: str) -> str:  # утилита: получить расширение файла
-    return pathlib.Path(name).suffix.lower()  # берём суффикс (расширение) и приводим к нижнему регистру
+    return Path(name).suffix.lower()  # 🔴 pathlib.Path → Path
 
 def _is_image(name: str) -> bool:  # проверка: это изображение?
     return _ext(name) in IMAGE_EXTS  # да, если расширение в списке IMAGE_EXTS
@@ -393,7 +414,7 @@ async def schedule_processing(msg: Message, delay_sec: Optional[int] = None) -> 
                     except Exception:
                         pass
 
-            
+
             # 🔴 Мониторинг статуса
             started = time.time()
             while True:

@@ -29,8 +29,7 @@ from bot import setup_handlers  # регистрация Telegram-хэндлер
 from admin_api import router as admin_router  # REST для админки
 from repo import fetch_messages  # получение сообщений из БД
 from repo import upload_file_to_amo  # 🔴 загрузка файлов в amoCRM
-# 🔁 Периодическое обновление токена amoCRM (раз в 12 часов)
-from amo_client import refresh_access_token  # импорт функции
+from constants import ALLOWED_ORIGINS  # 🔴 общие CORS источники
 # ======================
 #     НАСТРОЙКА БАЗЫ
 # ======================
@@ -101,11 +100,7 @@ async def periodic_token_refresh() -> None:
 # ======================
 
 # разрешённые источники (фронтенд и тестовые домены)
-ALLOWED_ORIGINS = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "https://amo.ap-development.com",
-]
+# CORS источники берём из общего модуля констант # 🔴
 
 app.add_middleware(
     CORSMiddleware,
@@ -153,8 +148,11 @@ async def telegram_webhook(request: Request) -> Dict[str, Any]:
     2. Дублируем апдейт в amoCRM.
     3. Создаём сделку и прикладываем файлы.
     """
-    # Проверяем секретный токен вебхука
-    if request.headers.get("x-telegram-bot-api-secret-token") != WEBHOOK_SECRET:
+    # Проверяем секретный токен вебхука (чтобы не принимать чужие запросы) # 🔴
+    secret = request.headers.get(
+        "x-telegram-bot-api-secret-token"
+    )  # 🔴
+    if secret != WEBHOOK_SECRET:  # 🔴
         raise HTTPException(status_code=403, detail="bad secret")
 
     # читаем JSON тела запроса (Telegram update)
@@ -179,10 +177,9 @@ async def telegram_webhook(request: Request) -> Dict[str, Any]:
             msg = data.get("message") or {}
             text = msg.get("text", "")
             username = msg.get("from", {}).get("username", "unknown")
-            message = f"{username}: {text}" if text else username
 
             # --- проверяем наличие вложения ---
-            file_uuid: Optional[str] = None
+            # UUID загруженного файла нам не требуется далее # 🔴
 
             # если документ
             if "document" in msg:
@@ -190,9 +187,9 @@ async def telegram_webhook(request: Request) -> Dict[str, Any]:
                 file_name = msg["document"].get("file_name", "file.bin")
                 file_info = await bot.get_file(file_id)
                 file_bytes = await bot.download_file(file_info.file_path)
-                file_uuid = await upload_file_to_amo(
+                await upload_file_to_amo(
                     file_name, file_bytes.read()
-                )
+                )  # 🔴
 
             # если фото (берём самое большое)
             elif "photo" in msg:
@@ -201,9 +198,9 @@ async def telegram_webhook(request: Request) -> Dict[str, Any]:
                 file_name = "photo.jpg"
                 file_info = await bot.get_file(file_id)
                 file_bytes = await bot.download_file(file_info.file_path)
-                file_uuid = await upload_file_to_amo(
+                await upload_file_to_amo(
                     file_name, file_bytes.read()
-                )
+                )  # 🔴
 
             # --- создаём контакт ---
             contact_payload = {"name": username or "Telegram user"}
@@ -222,9 +219,11 @@ async def telegram_webhook(request: Request) -> Dict[str, Any]:
                         contact_id = None
                         err = await contact_resp.text()
                         logging.warning(
-                            f"⚠️ Contact creation failed "
-                            f"[{contact_resp.status}]: {err}"
-                        )
+                            (
+                                "⚠️ Contact creation failed "
+                                f"[{contact_resp.status}]: {err}"
+                            )
+                        )  # 🔴
 
                 if not contact_id:
                     logging.warning("⚠️ Contact not created, skipping lead creation")
@@ -244,7 +243,9 @@ async def telegram_webhook(request: Request) -> Dict[str, Any]:
                 ) as lead_resp:
                     # 🔁 токен устарел → пробуем обновить
                     if lead_resp.status == 401:
-                        logging.warning("⚠️ amoCRM token expired — refreshing...")
+                        logging.warning(
+                            "⚠️ amoCRM token expired — refreshing..."
+                        )  # 🔴
                         new_token = await refresh_access_token()
                         async with session.post(
                             f"{AMO_API_URL}/api/v4/leads",
@@ -254,7 +255,12 @@ async def telegram_webhook(request: Request) -> Dict[str, Any]:
                             if retry_resp.status == 200:
                                 res = await retry_resp.json()
                                 lead_id = res[0]["id"]
-                                logging.info(f"✅ Lead created after token refresh: {lead_id}")
+                                logging.info(
+                                    (
+                                        "✅ Lead created after token refresh: "
+                                        f"{lead_id}"
+                                    )
+                                )  # 🔴
                             else:
                                 err = await retry_resp.text()
                                 logging.warning(
@@ -269,8 +275,11 @@ async def telegram_webhook(request: Request) -> Dict[str, Any]:
                     else:
                         err = await lead_resp.text()
                         logging.warning(
-                            f"❌ Lead creation failed [{lead_resp.status}]: {err}"
-                        )
+                            (
+                                "❌ Lead creation failed "
+                                f"[{lead_resp.status}]: {err}"
+                            )
+                        )  # 🔴
 
         except Exception as e:
             logging.warning(f"⚠️ Failed to create lead in amoCRM: {e}")

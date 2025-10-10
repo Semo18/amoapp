@@ -12,6 +12,7 @@ from sqlalchemy.sql import func, case  # агрегаты и условные в
 # локальные модули проекта
 from db import SessionLocal, User, Message  # сессия и ORM-модели
 import redis
+from constants import REDIS_LEAD_ID_KEY  # 🔴 единый ключ Redis
 
 
 # ==========================
@@ -348,15 +349,15 @@ async def upload_file_to_amo(file_name: str, file_bytes: bytes) -> Optional[str]
 
 # 🔴 эти функции нужны для умной привязки сделок к пользователя
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")  # адрес Redis
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 r = redis.from_url(REDIS_URL, decode_responses=True)
 
 
 def set_lead_id(chat_id: int, lead_id: str) -> None:
-    """🔴 Привязывает chat_id → lead_id (чтобы новые сообщения добавлялись в ту же сделку)."""
-    r.hset("medbot:lead", chat_id, lead_id)
+    """Привязывает chat_id → lead_id для повторного использования."""  # 🔴
+    r.hset(REDIS_LEAD_ID_KEY, chat_id, lead_id)  # 🔴
 
 
 def get_lead_id(chat_id: int) -> Optional[str]:
-    """🔴 Возвращает связанный lead_id, если есть."""
-    return r.hget("medbot:lead", chat_id)
+    """Возвращает связанный lead_id, если есть."""  # 🔴
+    return r.hget(REDIS_LEAD_ID_KEY, chat_id)  # 🔴
