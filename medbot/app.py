@@ -10,6 +10,9 @@ from typing import Optional, Dict, Any  # аннотации типов
 from fastapi import FastAPI, Request, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware  # CORS-доступ
 from amo_client import refresh_access_token  # 🔁 автообновление токена
+from storage import get_lead_id as redis_get_lead_id, set_lead_id as redis_set_lead_id  # 🔴
+from amo_client import create_lead_in_amo  # 🔴
+# (ниже ещё импортируем add_text_note / add_file_note после того, как добавим их в amo_client)
 
 # Telegram SDK (aiogram)
 from aiogram import Bot, Dispatcher
@@ -171,118 +174,59 @@ async def telegram_webhook(request: Request) -> Dict[str, Any]:
         except Exception as e:
             logging.warning(f"⚠️ Failed to forward Telegram update: {e}")
 
-    # (2) Создание сделки + контакт + файл
+    # app.py — замена блока создания сделки
+
+    # ...
+    # (2) Создание сделки / добавление заметки
     if AMO_API_URL and AMO_ACCESS_TOKEN:
         try:
             msg = data.get("message") or {}
+            chat_id = msg.get("chat", {}).get("id")
             text = msg.get("text", "")
             username = msg.get("from", {}).get("username", "unknown")
 
-            # --- проверяем наличие вложения ---
-            # UUID загруженного файла нам не требуется далее # 🔴
+            if not chat_id:  # страховка от нестандартных апдейтов
+                return {"ok": True}
 
-            # если документ
-            if "document" in msg:
-                file_id = msg["document"]["file_id"]
-                file_name = msg["document"].get("file_name", "file.bin")
-                file_info = await bot.get_file(file_id)
-                file_bytes = await bot.download_file(file_info.file_path)
-                await upload_file_to_amo(
-                    file_name, file_bytes.read()
-                )  # 🔴
+            # 1) Пытаемся использовать уже созданную сделку
+            lead_id = redis_get_lead_id(chat_id)
 
-            # если фото (берём самое большое)
-            elif "photo" in msg:
-                photo = msg["photo"][-1]
-                file_id = photo["file_id"]
-                file_name = "photo.jpg"
-                file_info = await bot.get_file(file_id)
-                file_bytes = await bot.download_file(file_info.file_path)
-                await upload_file_to_amo(
-                    file_name, file_bytes.read()
-                )  # 🔴
+            # 2) Если нет — создаём новую сделку через корректный клиент
+            if not lead_id:
+                lead_id = await create_lead_in_amo(chat_id=chat_id, username=username)
+                if lead_id:
+                    redis_set_lead_id(chat_id, str(lead_id))
 
-            # --- создаём контакт ---
-            contact_payload = {"name": username or "Telegram user"}
+            if not lead_id:
+                logging.warning("⚠️ Lead is not created — skip notes")
+                return {"ok": True}
 
-            timeout = aiohttp.ClientTimeout(total=10)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(
-                    f"{AMO_API_URL}/api/v4/contacts",
-                    headers={"Authorization": f"Bearer {AMO_ACCESS_TOKEN}"},
-                    json=[contact_payload],
-                ) as contact_resp:
-                    if contact_resp.status == 200:
-                        contact_res = await contact_resp.json()
-                        contact_id = contact_res[0]["id"]
-                    else:
-                        contact_id = None
-                        err = await contact_resp.text()
-                        logging.warning(
-                            (
-                                "⚠️ Contact creation failed "
-                                f"[{contact_resp.status}]: {err}"
-                            )
-                        )  # 🔴
+            # 3) Текст сообщения — как примечание
+            if text:
+                from amo_client import add_text_note  # 🔴 импорт после добавления функции
+                await add_text_note(lead_id=str(lead_id), text=text)
 
-                if not contact_id:
-                    logging.warning("⚠️ Contact not created, skipping lead creation")
-                    return {"ok": False}
+            # 4) Вложения: загрузим файл в amo + прикрепим к сделке
+            if "document" in msg or "photo" in msg:
+                file_name = None
+                file_id = None
+                if "document" in msg:
+                    file_id = msg["document"]["file_id"]
+                    file_name = msg["document"].get("file_name", "file.bin")
+                elif "photo" in msg:
+                    file_id = msg["photo"][-1]["file_id"]
+                    file_name = "photo.jpg"
 
-                # --- создаём сделку ---
-                lead_payload = {
-                    "name": f"Новый запрос из Telegram ({username})",
-                    "pipeline_id": int(os.getenv("AMO_PIPELINE_ID", "0")),
-                    "_embedded": {"contacts": [{"id": contact_id}]},
-                }
-
-                async with session.post(
-                    f"{AMO_API_URL}/api/v4/leads",
-                    headers={"Authorization": f"Bearer {AMO_ACCESS_TOKEN}"},
-                    json=[lead_payload],
-                ) as lead_resp:
-                    # 🔁 токен устарел → пробуем обновить
-                    if lead_resp.status == 401:
-                        logging.warning(
-                            "⚠️ amoCRM token expired — refreshing..."
-                        )  # 🔴
-                        new_token = await refresh_access_token()
-                        async with session.post(
-                            f"{AMO_API_URL}/api/v4/leads",
-                            headers={"Authorization": f"Bearer {new_token}"},
-                            json=[lead_payload],
-                        ) as retry_resp:
-                            if retry_resp.status == 200:
-                                res = await retry_resp.json()
-                                lead_id = res[0]["id"]
-                                logging.info(
-                                    (
-                                        "✅ Lead created after token refresh: "
-                                        f"{lead_id}"
-                                    )
-                                )  # 🔴
-                            else:
-                                err = await retry_resp.text()
-                                logging.warning(
-                                    f"❌ Lead creation failed after refresh [{retry_resp.status}]: {err}"
-                                )
-
-                    elif lead_resp.status == 200:
-                        res = await lead_resp.json()
-                        lead_id = res[0]["id"]
-                        logging.info(f"✅ Created lead {lead_id} with note & file")
-
-                    else:
-                        err = await lead_resp.text()
-                        logging.warning(
-                            (
-                                "❌ Lead creation failed "
-                                f"[{lead_resp.status}]: {err}"
-                            )
-                        )  # 🔴
+                if file_id:
+                    file_info = await bot.get_file(file_id)
+                    file_bytes = await bot.download_file(file_info.file_path)
+                    uuid = await upload_file_to_amo(file_name, file_bytes.read())  # 🔴
+                    if uuid:
+                        from amo_client import add_file_note  # 🔴 импорт после добавления функции
+                        await add_file_note(lead_id=str(lead_id), uuid=uuid, file_name=file_name)
 
         except Exception as e:
-            logging.warning(f"⚠️ Failed to create lead in amoCRM: {e}")
+            logging.warning(f"⚠️ Failed to process amoCRM linkage: {e}")
 
     return {"ok": True}  # Telegram ждёт подтверждение
 

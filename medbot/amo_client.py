@@ -156,3 +156,78 @@ async def create_lead_in_amo(chat_id: int, username: str) -> str | None:
         import traceback
         logging.warning(traceback.format_exc())
         return None
+
+# amo_client.py — добавить в конец файла
+async def add_text_note(lead_id: str, text: str) -> bool:
+    """
+    Добавляет текстовую заметку к сделке.
+    """
+    access_token = os.getenv("AMO_ACCESS_TOKEN")
+    if not access_token:
+        logging.warning("⚠️ No AMO_ACCESS_TOKEN in env")
+        return False
+
+    payload = [{
+        "entity_id": int(lead_id),
+        "note_type": "common",
+        "params": {"text": text[:8000]},  # защитимся от слишком длинного
+    }]
+
+    url = f"{AMO_API_URL}/api/v4/leads/notes"
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.post(
+                url,
+                headers={"Authorization": f"Bearer {access_token}"},
+                json=payload,
+            ) as r:
+                if r.status == 401:
+                    await refresh_access_token()
+                    return await add_text_note(lead_id, text)
+                txt = await r.text()
+                ok = 200 <= r.status < 300
+                logging.info(f"📎 add_text_note resp [{r.status}]: {txt}")
+                return ok
+    except Exception as e:
+        logging.warning(f"⚠️ add_text_note exception: {e}")
+        return False
+
+
+async def add_file_note(lead_id: str, uuid: str, file_name: str = "") -> bool:
+    """
+    Прикрепляет ранее загруженный файл (uuid) как заметку-attachment к сделке.
+    """
+    access_token = os.getenv("AMO_ACCESS_TOKEN")
+    if not access_token:
+        logging.warning("⚠️ No AMO_ACCESS_TOKEN in env")
+        return False
+
+    payload = [{
+        "entity_id": int(lead_id),
+        "note_type": "attachment",
+        "params": {
+            "attachments": [{
+                "file_name": file_name or "file.bin",
+                "uuid": uuid,
+            }]
+        },
+    }]
+
+    url = f"{AMO_API_URL}/api/v4/leads/notes"
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.post(
+                url,
+                headers={"Authorization": f"Bearer {access_token}"},
+                json=payload,
+            ) as r:
+                if r.status == 401:
+                    await refresh_access_token()
+                    return await add_file_note(lead_id, uuid, file_name)
+                txt = await r.text()
+                ok = 200 <= r.status < 300
+                logging.info(f"📎 add_file_note resp [{r.status}]: {txt}")
+                return ok
+    except Exception as e:
+        logging.warning(f"⚠️ add_file_note exception: {e}")
+        return False
