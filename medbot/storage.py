@@ -1,6 +1,7 @@
 # storage.py
 import os, time  # os — работа с окружением, time — текущее время (timestamp)
 import redis  # библиотека для подключения к Redis (быстрая база данных в памяти)
+from typing import Optional
 
 # берём адрес Redis из переменной окружения, если её нет — используем локальный сервер
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
