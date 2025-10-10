@@ -321,29 +321,23 @@ except Exception:
 
 
 # --- основная задача ---
-async def schedule_processing(msg: Message, delay_sec: Optional[int] = None) -> None:  # планирует обработку сообщения и выдачу ответа
-    try:  # защищаем основной поток от падений
-        delay = int(delay_sec if delay_sec is not None else DELAY_SEC)  # определяем задержку (переопределяемой параметром)
-        if delay > 0:  # если нужно подождать
-            await asyncio.sleep(delay)  # ждём указанное количество секунд
+async def schedule_processing(msg: Message, delay_sec: Optional[int] = None) -> None:
+    """Основной конвейер обработки сообщений пользователя."""
+    try:
+        delay = int(delay_sec if delay_sec is not None else DELAY_SEC)
+        if delay > 0:
+            await asyncio.sleep(delay)
 
         chat_id = msg.chat.id
-        logging.info(f"[ACK DEBUG] chat_id={chat_id} should_ack={should_ack(chat_id, 3600)}")
         thread_id = get_or_create_thread(chat_id)
         await send_log(msg.bot, f"DEBUG ACK check={should_ack(chat_id, 3600)} chat_id={chat_id}")
 
-        # 🔴 Отправляем ACK (но только если не отправляли в течение последнего часа)
-        if should_ack(chat_id, cooldown_sec=60):  # раз в минуту
-            # Показать "печатает..." 20 секунд
-            await _typing_for(msg.bot, chat_id, 20)
-
-            # Теперь реально ждём 20 секунд (даём пользователю визуально подождать)
+        # 🔴 Отправляем ACK (раз в минуту)
+        if should_ack(chat_id, cooldown_sec=60):
+            typing_task = asyncio.create_task(_typing_for(msg.bot, chat_id, 20))  # 🔴 фоновый typing
             await asyncio.sleep(20)
-
-            # 🚀 Отправляем сообщение из texts.py
+            typing_task.cancel()
             ack_msg = await msg.answer(ACK_DELAYED)
-
-            # Логируем сообщение как исходящее
             save_message(
                 chat_id=chat_id,
                 direction=1,
@@ -352,185 +346,100 @@ async def schedule_processing(msg: Message, delay_sec: Optional[int] = None) -> 
                 message_id=getattr(ack_msg, "message_id", None),
             )
 
-        base_text = msg.text or "Проанализируй вложение и ответь как медицинский консультант."  # текст запроса по умолчанию
+        base_text = msg.text or "Проанализируй вложение и ответь как медицинский консультант."
+        content: List[Dict[str, Any]] = [{"type": "text", "text": base_text}]
+        attachments = None
 
-        content: List[Dict[str, Any]] = [{"type": "text", "text": base_text}]  # формируем контент для сообщения в тред
-        attachments = None  # по умолчанию вложений (для file_search) нет
-
+        # 🔴 Обработка вложений
         if any([getattr(msg, "voice", None),
                 getattr(msg, "audio", None),
                 getattr(msg, "document", None),
-                getattr(msg, "photo", None)]):  # если есть какой-то файл во входящем сообщении
+                getattr(msg, "photo", None)]):
 
-            name, data = await _telegram_file_to_bytes(msg)  # скачиваем файл из Telegram → (имя, байты)
-            fid = _upload_bytes(name, data)  # загружаем файл в OpenAI и получаем file_id
+            name, data = await _telegram_file_to_bytes(msg)
+            fid = _upload_bytes(name, data)
 
-            if _is_image(name):  # если это изображение
-                content.append({"type": "image_file", "image_file": {"file_id": fid}})  # добавляем картинку в контент
-
-            elif _is_audio(name):  # если это аудио
-                # транскрипция через Whisper
+            if _is_image(name):
+                content.append({"type": "image_file", "image_file": {"file_id": fid}})
+            elif _is_audio(name):
                 try:
-                    tr = client.audio.transcriptions.create(  # отправляем аудио на распознавание речи
-                        model="whisper-1",  # модель распознавания
-                        file=(name, io.BytesIO(data)),  # имя и байты файла
-                    )
-                    text = tr.text.strip() if getattr(tr, "text", None) else ""  # берём распознанный текст (если есть)
+                    tr = client.audio.transcriptions.create(model="whisper-1", file=(name, io.BytesIO(data)))
+                    text = tr.text.strip() if getattr(tr, "text", None) else ""
                 except Exception:
-                    text = ""  # при ошибке распознавания — пустая строка
-                if not text:  # если текста нет
-                    text = "Не удалось автоматически распознать голосовое сообщение."  # пишем объяснение пользователю
+                    text = ""
+                if not text:
+                    text = "Не удалось автоматически распознать голосовое сообщение."
                 content = [{"type": "text",
-                            "text": f"Расшифровка голосового ({name}):\n{text}\n\nОтветь как медицинский консультант."}]  # формируем запрос с расшифровкой
+                            "text": f"Расшифровка голосового ({name}):\n{text}\n\nОтветь как медицинский консультант."}]
+            elif _is_retrieval_doc(name):
+                attachments = [{"file_id": fid, "tools": [{"type": "file_search"}]}]
+                content[0]["text"] = f"{base_text}\n\nУчти документ: {name}"
+            else:
+                content[0]["text"] = f"{base_text}\n\n(Файл {name} загружен; если нужно, укажите правильный формат.)"
 
-            elif _is_retrieval_doc(name):  # если это документ для поиска по содержимому (Retrieval)
-                attachments = [{"file_id": fid, "tools": [{"type": "file_search"}]}]  # подключаем инструмент file_search к файлу
-                content[0]["text"] = f"{base_text}\n\nУчти документ: {name}"  # просим учесть этот документ в ответе
-
-            else:  # прочие файлы (не распознали тип)
-                content[0]["text"] = f"{base_text}\n\n(Файл {name} загружен; если нужно, укажите правильный формат: PDF/JPG и т.п.)"  # мягкая подсказка пользователю
-
-        # —— СЕРИАЛИЗАЦИЯ ПО THREAD_ID: один писатель за раз — защищаем messages.create/run.create
-        lock_token = await _acquire_thread_lock(thread_id)  # захватываем лок (Redis или in-memory)
+        # 🔴 Отправка в OpenAI
+        lock_token = await _acquire_thread_lock(thread_id)
         try:
-            # Перед добавлением сообщения убеждаемся, что в треде нет активных run’ов
-            await _wait_thread_idle(thread_id, timeout_s=60)  # дождаться idle или попробовать мягкую отмену «старого» run
+            await _wait_thread_idle(thread_id, timeout_s=60)
+            await _messages_create_with_retry(thread_id, content, attachments, max_attempts=3)
 
-            # 2) сообщение в тред (безопасно, с ретраями на 400 “run is active”)
-            await _messages_create_with_retry(  # обёртка с бэкоффом и повтором на коллизию
+            # 🔴 фоновый typing во время запроса ассистента
+            typing_task = asyncio.create_task(_typing_for(msg.bot, chat_id, 60))
+
+            run = client.beta.threads.runs.create(
                 thread_id=thread_id,
-                content=content,
-                attachments=attachments,
-                max_attempts=3,
+                assistant_id=ASSISTANT_ID,
+                tool_choice="auto",
             )
 
-            # 3) запуск run
-            run = client.beta.threads.runs.create(  # запускаем выполнение ассистента по текущему треду
-                thread_id=thread_id,  # тред, где лежит наше сообщение
-                assistant_id=ASSISTANT_ID,  # какой ассистент должен отвечать
-                tool_choice="auto",  # ассистент сам решает, какие инструменты использовать
-            )
+            await send_log(msg.bot, f"🚀 Run {run.id} started for chat_id={chat_id}, thread={thread_id}")
 
-            # 🔴 логируем факт старта Run
-            await send_log(
-                msg.bot,
-                f"🚀 Run {run.id} started for chat_id={chat_id}, thread={thread_id}"
-            )
-
-        finally:
-            await _release_thread_lock(lock_token)  # обязательно освобождаем лок
-
-            # 4) мониторинг статуса (логируем смену статуса в лог-чат)
-            started = time.time()  # отметка времени старта
-            last_status = None  # предыдущий статус (для отслеживания изменений)
-            while True:  # опрашиваем статус выполнения
-                run = client.beta.threads.runs.retrieve(
-                    thread_id=thread_id, run_id=run.id
-                )  # узнаём текущий статус
-                if run.status != last_status:  # если статус изменился
-                    await send_log(
-                        msg.bot,
-                        f"run {run.id} status={run.status} chat_id={chat_id}",
-                    )  # шлём лог о смене статуса
-                    last_status = run.status  # запоминаем новый статус
-
-                if run.status in {
-                    "completed",
-                    "failed",
-                    "requires_action",
-                    "cancelled",
-                    "expired",
-                }:  # если выполнение завершилось
-                    if run.status != "completed":
-                        _log_run_error(run)  # 🔴 логируем last_error, если неуспех
-                    break  # выходим из цикла
-
-                await asyncio.sleep(2)  # ждём 2 секунды перед следующей проверкой
-
-                if time.time() - started > 600:  # если ждём слишком долго (таймаут 10 минут)
-                    await send_log(
-                        msg.bot, f"run {run.id} timeout chat_id={chat_id}"
-                    )  # логируем таймаут
+            # 🔴 Мониторинг статуса
+            started = time.time()
+            while True:
+                run = client.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run.id)
+                if run.status in {"completed", "failed", "requires_action", "cancelled", "expired"}:
+                    break
+                await asyncio.sleep(2)
+                if time.time() - started > 600:
                     try:
-                        client.beta.threads.runs.cancel(
-                            thread_id=thread_id, run_id=run.id
-                        )  # мягко отменяем «долгий» run
+                        client.beta.threads.runs.cancel(thread_id=thread_id, run_id=run.id)
                     except Exception:
                         pass
-                    break  # выходим
+                    break
 
-            # 🔴 После успешного завершения run — создаём сделку в amoCRM (если ещё нет)
-            try:
-                from repo import get_lead_id, set_lead_id
-                from amo_client import create_lead_in_amo  # новая вспомогательная функция
+            typing_task.cancel()  # 🔴 стоп typing при завершении
+        finally:
+            await _release_thread_lock(lock_token)
 
-                lead_id = get_lead_id(chat_id)
-                if not lead_id:  # если сделки для этого пользователя ещё нет
-                    logging.info(f"🧩 Creating amoCRM lead for chat_id={chat_id}")
-                    lead_id = await create_lead_in_amo(chat_id, msg.from_user.username)
-                    if lead_id:
-                        set_lead_id(chat_id, lead_id)  # сохраняем связь chat_id → lead_id
-                        logging.info(f"✅ Lead {lead_id} linked to chat_id={chat_id}")
-            except Exception as e:
-                logging.warning(f"⚠️ Failed to ensure amoCRM lead linkage: {e}")
+        # 🔴 Ответ пользователю
+        if run.status == "completed":
+            msgs = client.beta.threads.messages.list(thread_id=thread_id, order="desc", limit=2)
+            raw_txt = _first_text(msgs)
+            if not raw_txt:
+                raise RuntimeError("Empty response from assistant")
 
-            # 5) ответ пользователю
-            if run.status == "completed":  # если ассистент успешно завершил ответ
-                msgs = client.beta.threads.messages.list(
-                    thread_id=thread_id, order="desc", limit=2
-                )  # берём свежие сообщения из треда
-                raw_txt = _first_text(msgs)  # достаём текст ассистента
-                if raw_txt:  # если текст есть
-                    clean = _sanitize_markdown(raw_txt)  # убираем ###, **, --- и пр. из ответа
-                    chunks = _split_for_delivery(clean)  # режем: 1500 / 2500 / остальное
-                    if not chunks:
-                        chunks = [clean]  # защита на случай пустого списка
+            clean = _sanitize_markdown(raw_txt)
+            chunks = _split_for_delivery(clean) or [clean]
 
-                # Если есть вторая часть — "печатает..." 1.5 минуты и отправка
-                if len(chunks) >= 2:
-                    await _typing_for(msg.bot, chat_id, 300)  # 5 мин (300 сек)
-                    resp2 = await msg.answer(chunks[1])
-                    save_message(
-                        chat_id=msg.chat.id,
-                        direction=1,
-                        text=chunks[1],
-                        content_type="text",
-                        message_id=getattr(resp2, "message_id", None),
-                    )
+            # первая часть
+            typing_task = asyncio.create_task(_typing_for(msg.bot, chat_id, 15))
+            resp = await msg.answer(chunks[0])
+            typing_task.cancel()
+            save_message(chat_id, 1, chunks[0], "text", None, getattr(resp, "message_id", None))
 
-                # Если есть третья (и последующие — вдруг «хвост» > 4096), то:
-                if len(chunks) >= 3:
-                    await _typing_for(msg.bot, chat_id, 180)  # 3 минуты перед третьей частью
-                    # отправляем все оставшиеся куски (третью и далее)
-                    for i, tail_part in enumerate(chunks[2:], start=3):
-                        respN = await msg.answer(tail_part)
-                        save_message(
-                            chat_id=msg.chat.id,
-                            direction=1,
-                            text=tail_part,
-                            content_type="text",
-                            message_id=getattr(respN, "message_id", None),
-                        )
+            # остальные части
+            for tail_part in chunks[1:]:
+                typing_task = asyncio.create_task(_typing_for(msg.bot, chat_id, 10))
+                respN = await msg.answer(tail_part)
+                typing_task.cancel()
+                save_message(chat_id, 1, tail_part, "text", None, getattr(respN, "message_id", None))
+            return
 
-                return  # завершили нормальной отправкой
-
-        await msg.answer("Внутренняя ошибка обработки. Пожалуйста, повторите позже.")  # общий ответ при неудаче
-        await send_log(msg.bot, f"run {run.id} finished with status={run.status} (no text) chat_id={chat_id}")  # логируем завершение без текста
-        _log_run_error(run)  # 🔴 логируем last_error в любом случае
-        save_message(  # фиксируем системное исходящее сообщение об ошибке
-            chat_id=msg.chat.id,
-            direction=1,
-            text="Внутренняя ошибка обработки. Пожалуйста, повторите позже.",
-            content_type="system",
-        )
-
-    except Exception as e:  # глобальная защита: если что-то упало в процессе
-        await msg.answer("Внутренняя ошибка обработки. Пожалуйста, повторите позже.")  # информируем пользователя о проблеме
-        await send_log(msg.bot, f"exception: {e}\n{traceback.format_exc()}")  # отправляем детали исключения в лог-чат
-        save_message(  # логируем системное исходящее сообщение об ошибке
-            chat_id=msg.chat.id,
-            direction=1,
-            text="Внутренняя ошибка обработки. Пожалуйста, повторите позже.",
-            content_type="system",
-        )
-#Деплой тест
+        # если не completed
+        await msg.answer("⚠️ Ошибка обработки. Попробуйте позже.")
+        await send_log(msg.bot, f"run {run.id} finished with status={run.status}")
+        _log_run_error(run)
+    except Exception as e:
+        await msg.answer("⚠️ Внутренняя ошибка. Пожалуйста, повторите позже.")
+        await send_log(msg.bot, f"exception: {e}\n{traceback.format_exc()}")
