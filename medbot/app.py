@@ -29,7 +29,8 @@ from bot import setup_handlers  # регистрация Telegram-хэндлер
 from admin_api import router as admin_router  # REST для админки
 from repo import fetch_messages  # получение сообщений из БД
 from repo import upload_file_to_amo  # 🔴 загрузка файлов в amoCRM
-
+# 🔁 Периодическое обновление токена amoCRM (раз в 12 часов)
+from amo_client import refresh_access_token  # импорт функции
 # ======================
 #     НАСТРОЙКА БАЗЫ
 # ======================
@@ -68,6 +69,27 @@ AMO_ENABLED = bool(AMO_WEBHOOK_URL or AMO_API_URL)
 bot = Bot(BOT_TOKEN)  # основной Telegram-бот
 dp = Dispatcher()  # маршрутизатор aiogram
 app = FastAPI(title="medbot")  # приложение FastAPI
+
+
+
+@app.on_event("startup")
+async def periodic_token_refresh() -> None:
+    """Автоматически обновляет amoCRM токен каждые 12 часов."""
+    import asyncio
+    import logging
+
+    async def refresher():
+        while True:
+            try:
+                logging.info("♻️ Scheduled amoCRM token refresh...")
+                await refresh_access_token()
+                logging.info("✅ amoCRM token refreshed successfully (scheduled)")
+            except Exception as exc:
+                logging.warning(f"⚠️ Failed scheduled token refresh: {exc}")
+            await asyncio.sleep(12 * 3600)  # каждые 12 часов
+
+    asyncio.create_task(refresher())
+
 
 # ======================
 #     НАСТРОЙКА CORS
