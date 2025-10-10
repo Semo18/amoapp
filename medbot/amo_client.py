@@ -1,70 +1,104 @@
-import os
-import json
-import logging
-import aiohttp
+# amo_client.py
+# 🔴 Подсистема интеграции с amoCRM:
+# - автообновление токена по refresh_token
+# - создание контактов и сделок
+# - добавление примечаний к существующим сделкам
+
+import os, aiohttp, asyncio, logging
 from dotenv import load_dotenv
+from pathlib import Path
+import json
 
-# Загружаем .env (для локального запуска и systemd)
-load_dotenv()
+# загружаем .env (используем абсолютный путь)
+ENV_PATH = "/var/www/medbot/.env"
+load_dotenv(ENV_PATH)
 
-AMO_API_URL = os.getenv("AMO_API_URL")
-AMO_CLIENT_ID = os.getenv("AMO_CLIENT_ID")
-AMO_CLIENT_SECRET = os.getenv("AMO_CLIENT_SECRET")
-AMO_REDIRECT_URI = os.getenv("AMO_REDIRECT_URI")
-AMO_REFRESH_TOKEN = os.getenv("AMO_REFRESH_TOKEN")
-AMO_ACCESS_TOKEN = os.getenv("AMO_ACCESS_TOKEN")
-ENV_PATH = "/var/www/medbot/.env"  # путь к .env
+AMO_API_URL = os.getenv("AMO_API_URL", "")
+AMO_CLIENT_ID = os.getenv("AMO_CLIENT_ID", "")
+AMO_CLIENT_SECRET = os.getenv("AMO_CLIENT_SECRET", "")
+AMO_REDIRECT_URI = os.getenv("AMO_REDIRECT_URI", "")
+AMO_REFRESH_TOKEN = os.getenv("AMO_REFRESH_TOKEN", "")
+AMO_ACCESS_TOKEN = os.getenv("AMO_ACCESS_TOKEN", "")
+AMO_PIPELINE_ID = os.getenv("AMO_PIPELINE_ID", "0")
 
-# 🔹 вспомогательная функция для обновления токена
+# 🔴 автообновление токена
 async def refresh_access_token() -> str:
-    """Обновляет ACCESS_TOKEN через refresh_token"""
-    logging.info("♻️  Refreshing amoCRM access token...")
+    """Обновляет токен amoCRM через refresh_token и сохраняет в .env"""
     url = f"{AMO_API_URL}/oauth2/access_token"
-    data = {
+    payload = {
         "client_id": AMO_CLIENT_ID,
         "client_secret": AMO_CLIENT_SECRET,
         "grant_type": "refresh_token",
         "refresh_token": AMO_REFRESH_TOKEN,
         "redirect_uri": AMO_REDIRECT_URI,
     }
+
     async with aiohttp.ClientSession() as session:
-        async with session.post(url, json=data) as resp:
+        async with session.post(url, json=payload) as resp:
             if resp.status != 200:
                 text = await resp.text()
-                logging.error(f"❌ Failed to refresh token ({resp.status}): {text}")
-                raise RuntimeError(f"Failed to refresh amoCRM token: {resp.status}")
-            result = await resp.json()
+                raise RuntimeError(f"Token refresh failed [{resp.status}]: {text}")
+            data = await resp.json()
+            new_token = data["access_token"]
+            new_refresh = data.get("refresh_token", AMO_REFRESH_TOKEN)
 
-    new_access = result["access_token"]
-    new_refresh = result["refresh_token"]
+            # 🔴 обновляем .env (перезаписываем токены)
+            lines = []
+            with open(ENV_PATH, "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("AMO_ACCESS_TOKEN="):
+                        line = f"AMO_ACCESS_TOKEN={new_token}\n"
+                    elif line.startswith("AMO_REFRESH_TOKEN="):
+                        line = f"AMO_REFRESH_TOKEN={new_refresh}\n"
+                    lines.append(line)
+            with open(ENV_PATH, "w", encoding="utf-8") as f:
+                f.writelines(lines)
 
-    # 🔸 Перезаписываем в .env
-    _update_env_file("AMO_ACCESS_TOKEN", new_access)
-    _update_env_file("AMO_REFRESH_TOKEN", new_refresh)
+            os.environ["AMO_ACCESS_TOKEN"] = new_token
+            logging.info("✅ amoCRM token refreshed successfully")
+            return new_token
 
-    # Обновляем переменные окружения текущего процесса
-    os.environ["AMO_ACCESS_TOKEN"] = new_access
-    os.environ["AMO_REFRESH_TOKEN"] = new_refresh
+# 🔴 создание сделки и контакта
+async def create_lead_in_amo(chat_id: int, username: str) -> str | None:
+    """Создаёт сделку и контакт в amoCRM, возвращает lead_id."""
+    access_token = os.getenv("AMO_ACCESS_TOKEN")
+    if not access_token:
+        logging.warning("⚠️ No AMO_ACCESS_TOKEN in env")
+        return None
 
-    logging.info("✅ amoCRM token refreshed successfully")
-    return new_access
+    async with aiohttp.ClientSession() as s:
+        # создаём контакт
+        contact = {"name": username or f"Telegram {chat_id}"}
+        async with s.post(
+            f"{AMO_API_URL}/api/v4/contacts",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json=[contact],
+        ) as r:
+            if r.status != 200:
+                logging.warning(f"⚠️ Contact creation failed: {await r.text()}")
+                return None
+            res = await r.json()
+            contact_id = res[0]["id"]
 
-
-def _update_env_file(key: str, value: str) -> None:
-    """Перезаписывает значение переменной в .env"""
-    try:
-        with open(ENV_PATH, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-
-        found = False
-        with open(ENV_PATH, "w", encoding="utf-8") as f:
-            for line in lines:
-                if line.startswith(f"{key}="):
-                    f.write(f"{key}={value}\n")
-                    found = True
-                else:
-                    f.write(line)
-            if not found:
-                f.write(f"{key}={value}\n")
-    except Exception as e:
-        logging.error(f"Ошибка при обновлении .env: {e}")
+        # создаём сделку
+        lead = {
+            "name": f"Новый запрос из Telegram ({username})",
+            "pipeline_id": int(AMO_PIPELINE_ID),
+            "_embedded": {"contacts": [{"id": contact_id}]},
+        }
+        async with s.post(
+            f"{AMO_API_URL}/api/v4/leads",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json=[lead],
+        ) as r:
+            if r.status == 401:
+                logging.warning("⚠️ Token expired during lead creation, refreshing...")
+                await refresh_access_token()
+                return await create_lead_in_amo(chat_id, username)
+            if r.status != 200:
+                logging.warning(f"❌ Lead creation failed [{r.status}]: {await r.text()}")
+                return None
+            data = await r.json()
+            lead_id = data[0]["id"]
+            logging.info(f"✅ Created amoCRM lead {lead_id} for chat_id={chat_id}")
+            return lead_id

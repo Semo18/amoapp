@@ -71,10 +71,12 @@ dp = Dispatcher()  # маршрутизатор aiogram
 app = FastAPI(title="medbot")  # приложение FastAPI
 
 
-
+# 🔴 Улучшенный автообновлятор amoCRM токена с повтором при ошибке
 @app.on_event("startup")
 async def periodic_token_refresh() -> None:
-    """Автоматически обновляет amoCRM токен каждые 12 часов."""
+    """Автоматически обновляет amoCRM токен каждые 12 часов,
+    с повтором через 5 минут при неудаче (например, сбой сети или 401).
+    """
     import asyncio
     import logging
 
@@ -82,13 +84,16 @@ async def periodic_token_refresh() -> None:
         while True:
             try:
                 logging.info("♻️ Scheduled amoCRM token refresh...")
-                await refresh_access_token()
+                await refresh_access_token()  # 🔴 обновление токена
                 logging.info("✅ amoCRM token refreshed successfully (scheduled)")
+                await asyncio.sleep(12 * 3600)  # 🔴 спим 12 часов до следующего цикла
             except Exception as exc:
                 logging.warning(f"⚠️ Failed scheduled token refresh: {exc}")
-            await asyncio.sleep(12 * 3600)  # каждые 12 часов
+                logging.info("🔁 Retrying amoCRM token refresh in 5 minutes...")
+                await asyncio.sleep(300)  # 🔴 повтор через 5 минут
 
-    asyncio.create_task(refresher())
+    asyncio.create_task(refresher())  # 🔴 запускаем цикл в фоне
+
 
 
 # ======================
