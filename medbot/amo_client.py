@@ -104,7 +104,17 @@ async def create_lead_in_amo(chat_id: int, username: str) -> str | None:
                     logging.warning(f"❌ Contact creation failed [{r.status}]: {txt}")
                     return None
                 res = await r.json()
-                contact_id = res[0]["id"]
+                # новый формат ответа amoCRM — id внутри _embedded
+                contact_id = None
+                if isinstance(res, dict):
+                    embedded = res.get("_embedded", {})
+                    contacts = embedded.get("contacts", [])
+                    if contacts and isinstance(contacts, list):
+                        contact_id = contacts[0].get("id")
+
+                if not contact_id:
+                    logging.warning(f"⚠️ Could not parse contact_id from response: {res}")
+                    return None
 
             # 🔹 создаём сделку
             lead = {
@@ -127,7 +137,17 @@ async def create_lead_in_amo(chat_id: int, username: str) -> str | None:
                     logging.warning(f"❌ Lead creation failed [{r.status}]: {txt}")
                     return None
                 data = await r.json()
-                lead_id = data[0]["id"]
+                lead_id = None
+                if isinstance(data, dict):
+                    embedded = data.get("_embedded", {})
+                    leads = embedded.get("leads", [])
+                    if leads and isinstance(leads, list):
+                        lead_id = leads[0].get("id")
+
+                if not lead_id:
+                    logging.warning(f"⚠️ Could not parse lead_id from response: {data}")
+                    return None
+
                 logging.info(f"✅ Created amoCRM lead {lead_id} for chat_id={chat_id}")
                 return lead_id
 
