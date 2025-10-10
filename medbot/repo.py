@@ -287,3 +287,56 @@ def get_analytics_summary(  # новая универсальная функци
             "messages_in": int(row.messages_in or 0),
             "messages_out": int(row.messages_out or 0),
         }
+
+# ==========================
+# Загрузка файлов в amoCRM
+# ==========================
+
+import aiohttp
+import logging
+import os
+
+
+AMO_API_URL = os.getenv("AMO_API_URL", "")
+AMO_ACCESS_TOKEN = os.getenv("AMO_ACCESS_TOKEN", "")
+
+
+async def upload_file_to_amo(file_name: str, file_bytes: bytes) -> Optional[str]:
+    """
+    Загружает файл в amoCRM и возвращает UUID загруженного файла.
+    Используется при создании сделок из Telegram.
+    """
+    try:
+        # создаём HTTP-сессию
+        async with aiohttp.ClientSession() as session:
+            # готовим форму multipart/form-data
+            form = aiohttp.FormData()
+            form.add_field(
+                "file",
+                file_bytes,
+                filename=file_name,
+                content_type="application/octet-stream",
+            )
+
+            # отправляем POST-запрос в amoCRM API
+            async with session.post(
+                f"{AMO_API_URL}/api/v4/files",
+                headers={"Authorization": f"Bearer {AMO_ACCESS_TOKEN}"},
+                data=form,
+            ) as resp:
+                if resp.status == 200:
+                    # читаем JSON и возвращаем UUID файла
+                    data = await resp.json()
+                    uuid = data.get("uuid")
+                    logging.info(f"✅ File uploaded to amoCRM: {file_name}")
+                    return uuid
+                else:
+                    # ошибка на стороне amoCRM — логируем
+                    text = await resp.text()
+                    logging.warning(
+                        f"⚠️ Failed to upload file [{resp.status}]: {text}"
+                    )
+                    return None
+    except Exception as e:
+        logging.warning(f"⚠️ upload_file_to_amo exception: {e}")
+        return None
