@@ -364,15 +364,13 @@ async def schedule_processing(msg: Message, delay_sec: Optional[int] = None) -> 
             else:
                 content[0]["text"] = f"{base_text}\n\n(Файл {name} загружен; если нужно, укажите правильный формат.)"
 
-
-
-                # 🔴 Отправка в OpenAI
+        # 🔴 Отправка в OpenAI
         lock_token = await _acquire_thread_lock(thread_id)
         try:
             await _wait_thread_idle(thread_id, timeout_s=60)
             await _messages_create_with_retry(thread_id, content, attachments, max_attempts=3)
 
-            # 🔹 фоновый typing во время запроса ассистента
+            # 🔴 фоновый typing во время запроса ассистента
             typing_task = asyncio.create_task(_typing_for(msg.bot, chat_id, 60))
 
             run = client.beta.threads.runs.create(
@@ -380,45 +378,44 @@ async def schedule_processing(msg: Message, delay_sec: Optional[int] = None) -> 
                 assistant_id=ASSISTANT_ID,
                 tool_choice="auto",
             )
-            await send_log(
-                msg.bot,
-                f"🚀 Run {run.id} started for chat_id={chat_id}, thread={thread_id}",
-            )
 
-            # 🔹 мониторинг статуса run
+            await send_log(msg.bot, f"🚀 Run {run.id} started for chat_id={chat_id}, thread={thread_id}")
+
+            async def _release_thread_lock(lock_token):  # освобождение лока
+                if _redis and isinstance(lock_token, str):
+                    try:
+                        await _redis.delete(lock_token)  # снимаем ключ лока в Redis
+                    except Exception:
+                        pass
+                elif isinstance(lock_token, asyncio.Lock):
+                    try:
+                        lock_token.release()  # отпускаем лок в памяти процесса
+                    except Exception:
+                        pass
+
+            # 🔴 Мониторинг статуса
             started = time.time()
             while True:
-                run = client.beta.threads.runs.retrieve(
-                    thread_id=thread_id, run_id=run.id
-                )
-                if run.status in {
-                    "completed",
-                    "failed",
-                    "requires_action",
-                    "cancelled",
-                    "expired",
-                }:
+                run = client.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run.id)
+                if run.status in {"completed", "failed", "requires_action", "cancelled", "expired"}:
                     break
                 await asyncio.sleep(2)
                 if time.time() - started > 600:
                     try:
-                        client.beta.threads.runs.cancel(
-                            thread_id=thread_id, run_id=run.id
-                        )
+                        client.beta.threads.runs.cancel(thread_id=thread_id, run_id=run.id)
                     except Exception:
                         pass
                     break
+
+            typing_task.cancel()  # 🔴 стоп typing при завершении
         finally:
-            # безопасно отпускаем лок и останавливаем typing
-            if typing_task and not typing_task.done():
-                typing_task.cancel()
             await _release_thread_lock(lock_token)
 
-        # 🔴 Успешное завершение: создаём сделку в amoCRM и отправляем ответ
+        # 🔴 После завершения run проверяем, не нужно ли создать сделку в amoCRM
         if run.status == "completed":
             try:
                 from storage import get_lead_id, set_lead_id
-                from amo_client import create_lead_in_amo
+                from amo_client import create_lead_in_amo  # вспомогательная функция
 
                 lead_id = get_lead_id(chat_id)
                 if not lead_id:
@@ -426,18 +423,13 @@ async def schedule_processing(msg: Message, delay_sec: Optional[int] = None) -> 
                     lead_id = await create_lead_in_amo(chat_id, msg.from_user.username)
                     if lead_id:
                         set_lead_id(chat_id, lead_id)
-                        logging.info(
-                            f"✅ Lead {lead_id} linked to chat_id={chat_id}"
-                        )
+                        logging.info(f"✅ Lead {lead_id} linked to chat_id={chat_id}")
             except Exception as e:
-                logging.warning(
-                    f"⚠️ Failed to ensure amoCRM lead linkage: {e}"
-                )
+                logging.warning(f"⚠️ Failed to ensure amoCRM lead linkage: {e}")
 
-            # 🔹 получаем ответ ассистента
-            msgs = client.beta.threads.messages.list(
-                thread_id=thread_id, order="desc", limit=2
-            )
+        # 🔴 Ответ пользователю
+        if run.status == "completed":
+            msgs = client.beta.threads.messages.list(thread_id=thread_id, order="desc", limit=2)
             raw_txt = _first_text(msgs)
             if not raw_txt:
                 raise RuntimeError("Empty response from assistant")
@@ -445,40 +437,18 @@ async def schedule_processing(msg: Message, delay_sec: Optional[int] = None) -> 
             clean = _sanitize_markdown(raw_txt)
             chunks = _split_for_delivery(clean) or [clean]
 
-            # 🔹 первая часть
+            # первая часть
             typing_task = asyncio.create_task(_typing_for(msg.bot, chat_id, 15))
             resp = await msg.answer(chunks[0])
-            if typing_task and not typing_task.done():
-                typing_task.cancel()
+            typing_task.cancel()
+            save_message(chat_id, 1, chunks[0], "text", None, getattr(resp, "message_id", None))
 
-            save_message(
-                chat_id=chat_id,
-                direction=1,
-                text=chunks[0],
-                content_type="text",
-                message_id=getattr(resp, "message_id", None),
-            )
-
-            # 🔹 остальные части (если есть)
+            # остальные части
             for tail_part in chunks[1:]:
                 typing_task = asyncio.create_task(_typing_for(msg.bot, chat_id, 10))
                 respN = await msg.answer(tail_part)
-                if typing_task and not typing_task.done():
-                    typing_task.cancel()
-                save_message(
-                    chat_id=chat_id,
-                    direction=1,
-                    text=tail_part,
-                    content_type="text",
-                    message_id=getattr(respN, "message_id", None),
-                )
+                typing_task.cancel()
+                save_message(chat_id, 1, tail_part, "text", None, getattr(respN, "message_id", None))
+            return
 
-            return  # завершение функции
 
-        # 🔴 если run не завершился корректно
-        await msg.answer("⚠️ Ошибка обработки. Попробуйте позже.")
-        await send_log(
-            msg.bot,
-            f"run {run.id} finished with status={run.status} chat_id={chat_id}",
-        )
-        _log_run_error(run)
