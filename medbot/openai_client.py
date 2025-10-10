@@ -380,7 +380,7 @@ async def schedule_processing(msg: Message, delay_sec: Optional[int] = None) -> 
             )
 
             await send_log(msg.bot, f"🚀 Run {run.id} started for chat_id={chat_id}, thread={thread_id}")
-
+            
             async def _release_thread_lock(lock_token):  # освобождение лока
                 if _redis and isinstance(lock_token, str):
                     try:
@@ -393,6 +393,7 @@ async def schedule_processing(msg: Message, delay_sec: Optional[int] = None) -> 
                     except Exception:
                         pass
 
+            
             # 🔴 Мониторинг статуса
             started = time.time()
             while True:
@@ -410,22 +411,6 @@ async def schedule_processing(msg: Message, delay_sec: Optional[int] = None) -> 
             typing_task.cancel()  # 🔴 стоп typing при завершении
         finally:
             await _release_thread_lock(lock_token)
-
-        # 🔴 После завершения run проверяем, не нужно ли создать сделку в amoCRM
-        if run.status == "completed":
-            try:
-                from storage import get_lead_id, set_lead_id
-                from amo_client import create_lead_in_amo  # вспомогательная функция
-
-                lead_id = get_lead_id(chat_id)
-                if not lead_id:
-                    logging.info(f"🧩 Creating amoCRM lead for chat_id={chat_id}")
-                    lead_id = await create_lead_in_amo(chat_id, msg.from_user.username)
-                    if lead_id:
-                        set_lead_id(chat_id, lead_id)
-                        logging.info(f"✅ Lead {lead_id} linked to chat_id={chat_id}")
-            except Exception as e:
-                logging.warning(f"⚠️ Failed to ensure amoCRM lead linkage: {e}")
 
         # 🔴 Ответ пользователю
         if run.status == "completed":
@@ -451,4 +436,10 @@ async def schedule_processing(msg: Message, delay_sec: Optional[int] = None) -> 
                 save_message(chat_id, 1, tail_part, "text", None, getattr(respN, "message_id", None))
             return
 
-
+        # если не completed
+        await msg.answer("⚠️ Ошибка обработки. Попробуйте позже.")
+        await send_log(msg.bot, f"run {run.id} finished with status={run.status}")
+        _log_run_error(run)
+    except Exception as e:
+        await msg.answer("⚠️ Внутренняя ошибка. Пожалуйста, повторите позже.")
+        await send_log(msg.bot, f"exception: {e}\n{traceback.format_exc()}")
