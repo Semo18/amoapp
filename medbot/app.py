@@ -9,6 +9,7 @@ from typing import Optional, Dict, Any  # аннотации типов
 # каркас веб-приложения и утилиты
 from fastapi import FastAPI, Request, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware  # CORS-доступ
+from amo_client import refresh_access_token  # 🔁 автообновление токена
 
 # Telegram SDK (aiogram)
 from aiogram import Bot, Dispatcher
@@ -214,33 +215,36 @@ async def telegram_webhook(request: Request) -> Dict[str, Any]:
                     headers={"Authorization": f"Bearer {AMO_ACCESS_TOKEN}"},
                     json=[lead_payload],
                 ) as lead_resp:
-                    if lead_resp.status == 200:
+                    # 🔁 токен устарел → пробуем обновить
+                    if lead_resp.status == 401:
+                        logging.warning("⚠️ amoCRM token expired — refreshing...")
+                        new_token = await refresh_access_token()
+                        async with session.post(
+                            f"{AMO_API_URL}/api/v4/leads",
+                            headers={"Authorization": f"Bearer {new_token}"},
+                            json=[lead_payload],
+                        ) as retry_resp:
+                            if retry_resp.status == 200:
+                                res = await retry_resp.json()
+                                lead_id = res[0]["id"]
+                                logging.info(f"✅ Lead created after token refresh: {lead_id}")
+                            else:
+                                err = await retry_resp.text()
+                                logging.warning(
+                                    f"❌ Lead creation failed after refresh [{retry_resp.status}]: {err}"
+                                )
+
+                    elif lead_resp.status == 200:
                         res = await lead_resp.json()
                         lead_id = res[0]["id"]
-
-                        # создаём примечание к сделке
-                        note_payload = {
-                            "note_type": "common",
-                            "params": {"text": message},
-                        }
-
-                        if file_uuid:
-                            note_payload["_embedded"] = {
-                                "files": [{"uuid": file_uuid}]
-                            }
-
-                        await session.post(
-                            f"{AMO_API_URL}/api/v4/leads/{lead_id}/notes",
-                            headers={"Authorization": f"Bearer {AMO_ACCESS_TOKEN}"},
-                            json=[note_payload],
-                        )
-
                         logging.info(f"✅ Created lead {lead_id} with note & file")
+
                     else:
                         err = await lead_resp.text()
                         logging.warning(
                             f"❌ Lead creation failed [{lead_resp.status}]: {err}"
                         )
+
         except Exception as e:
             logging.warning(f"⚠️ Failed to create lead in amoCRM: {e}")
 
