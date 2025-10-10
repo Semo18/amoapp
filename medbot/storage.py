@@ -57,3 +57,9 @@ def should_ack(chat_id: int, cooldown_sec: int = 3600) -> bool:
         r.set(key, now)  # обновляем время последнего авто-квитка
         return True  # можно отправить новый авто-квиток
     return False  # рано отправлять, ждём ещё
+
+def get_lead_id(chat_id: int) -> Optional[str]:
+    return r.hget("medbot:tchat:lead_id", chat_id)
+
+def set_lead_id(chat_id: int, lead_id: str):
+    r.hset("medbot:tchat:lead_id", chat_id, lead_id)
