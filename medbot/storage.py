@@ -9,6 +9,7 @@ from constants import (  # 🔴 централизованные ключи и �
     REDIS_ACK_ONCE_PREFIX,  # 🔴
     REDIS_LAST_ACK_PREFIX,  # 🔴
     REDIS_LEAD_ID_KEY,  # 🔴
+    ACK_ONCE_TTL_SEC,  # 🔴 время жизни пометки ACK
 )
 
 # берём адрес Redis из переменных окружения; по умолчанию — локальный
@@ -43,7 +44,7 @@ def drop_thread_id(chat_id: int):
     r.hdel(REDIS_LAST_SEEN_KEY, chat_id)  # 🔴
 
 
-def ack_once(chat_id: int, ttl_seconds: int = 24 * 3600) -> bool:
+def ack_once(chat_id: int, ttl_seconds: int = ACK_ONCE_TTL_SEC) -> bool:  # 🔴
     """
     Проверяет, отправляли ли уже авто-квиток.
     Если ещё не отправляли — возвращает True и помечает, что отправлен.

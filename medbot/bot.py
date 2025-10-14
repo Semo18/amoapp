@@ -11,8 +11,10 @@ from repo import upsert_user_from_msg, save_message  # функции запис
 from texts import WELCOME, DISCLAIMER, ACK_DELAYED  # заранее заготовленные тексты для приветствия, дисклеймера и авто-ответа
 from openai_client import schedule_processing, ensure_thread_choice  # функции для интеграции с OpenAI
 
+from constants import DEFAULT_REPLY_DELAY_SEC  # 🔴 централизованная задержка
+
 # На время разработки 60 сек; можно переопределить в .env -> REPLY_DELAY_SEC
-DELAY_SEC = int(os.getenv("REPLY_DELAY_SEC", "60"))  # задержка ответа (по умолчанию 60 сек, можно задать через .env)
+DELAY_SEC = int(os.getenv("REPLY_DELAY_SEC", str(DEFAULT_REPLY_DELAY_SEC)))  # 🔴
 
 router = Router()  # создаём маршрутизатор сообщений
 

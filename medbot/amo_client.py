@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from pathlib import Path
 from storage import set_lead_id, get_lead_id  # 🔴 связь chat_id → lead_id
 from typing import Optional
+from constants import AMO_REQUEST_TIMEOUT_SEC  # 🔴 таймаут для amoCRM API
 
 # =============================
 #        НАСТРОЙКА ОКРУЖЕНИЯ
@@ -44,7 +45,7 @@ async def refresh_access_token() -> str:
     }
 
     async with aiohttp.ClientSession() as session:
-        async with session.post(url, json=payload, timeout=15) as resp:
+        async with session.post(url, json=payload, timeout=AMO_REQUEST_TIMEOUT_SEC) as resp:  # 🔴
             if resp.status != 200:
                 text = await resp.text()
                 raise RuntimeError(f"Token refresh failed [{resp.status}]: {text}")
@@ -230,4 +231,56 @@ async def add_file_note(lead_id: str, uuid: str, file_name: str = "") -> bool:
                 return ok
     except Exception as e:
         logging.warning(f"⚠️ add_file_note exception: {e}")
+        return False
+
+# =======================================
+#      🧩 amoCRM Chat API (двусторонняя интеграция)
+# =======================================
+
+async def send_chat_message_to_amo(chat_id: int, text: str, username: str) -> bool:
+    """
+    Отправляет сообщение клиента в amoCRM как chat message (а не note).
+    chat_id — ID Telegram-пользователя.
+    """
+    access_token = os.getenv("AMO_ACCESS_TOKEN")
+    if not access_token:
+        logging.warning("⚠️ No AMO_ACCESS_TOKEN in env")
+        return False
+
+    chat_uid = f"telegram-{chat_id}"  # уникальный chat_id amoCRM
+    payload = {
+        "add": [
+            {
+                "chat_id": chat_uid,
+                "message": {
+                    "text": text,
+                    "type": "text",
+                    "external_id": f"tg_{chat_id}_{int(asyncio.get_event_loop().time())}",
+                },
+                "user": {"id": str(chat_id), "name": username or f"User {chat_id}"},
+            }
+        ]
+    }
+
+    url = f"{AMO_API_URL}/api/v4/chats/messages"
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.post(
+                url,
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=AMO_REQUEST_TIMEOUT_SEC,
+            ) as r:
+                txt = await r.text()
+                ok = 200 <= r.status < 300
+                logging.info(f"💬 send_chat_message_to_amo [{r.status}]: {txt}")
+                if r.status == 401:
+                    await refresh_access_token()
+                    return await send_chat_message_to_amo(chat_id, text, username)
+                return ok
+    except Exception as e:
+        logging.warning(f"⚠️ send_chat_message_to_amo exception: {e}")
         return False

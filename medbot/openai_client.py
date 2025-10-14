@@ -20,6 +20,15 @@ from constants import (  # 🔴 централизованные констан�
     SPLIT_SECOND_LIMIT,
     TELEGRAM_TEXT_LIMIT,
     ACTIVE_RUN_STATUSES,
+    OPENAI_RUN_TIMEOUT_SEC,
+    OPENAI_RUN_POLL_INTERVAL_SEC,
+    OPENAI_THREAD_IDLE_TIMEOUT_SEC,
+    OPENAI_THREAD_IDLE_POLL_SEC,
+    TELEGRAM_TYPING_DURATION_SEC,
+    TELEGRAM_TYPING_ACK_DURATION_SEC,
+    TELEGRAM_TYPING_RESPONSE_DURATION_SEC,
+    TELEGRAM_TYPING_TAIL_DURATION_SEC,
+    ACK_COOLDOWN_SEC,
 )
 
 
@@ -341,9 +350,11 @@ async def schedule_processing(msg: Message, delay_sec: Optional[int] = None) -> 
         await send_log(msg.bot, f"DEBUG ACK check={should_ack(chat_id, 3600)} chat_id={chat_id}")
 
         # 🔴 Отправляем ACK (раз в минуту)
-        if should_ack(chat_id, cooldown_sec=60):
-            typing_task = asyncio.create_task(_typing_for(msg.bot, chat_id, 20))  # 🔴 фоновый typing
-            await asyncio.sleep(20)
+        if should_ack(chat_id, cooldown_sec=ACK_COOLDOWN_SEC):  # 🔴 используем константу
+            typing_task = asyncio.create_task(
+                _typing_for(msg.bot, chat_id, TELEGRAM_TYPING_ACK_DURATION_SEC)
+            )  # 🔴 фоновый typing с константой
+            await asyncio.sleep(TELEGRAM_TYPING_ACK_DURATION_SEC)  # 🔴
             typing_task.cancel()
             ack_msg = await msg.answer(ACK_DELAYED)
             save_message(
@@ -388,11 +399,13 @@ async def schedule_processing(msg: Message, delay_sec: Optional[int] = None) -> 
         # 🔴 Отправка в OpenAI
         lock_token = await _acquire_thread_lock(thread_id)
         try:
-            await _wait_thread_idle(thread_id, timeout_s=60)
+            await _wait_thread_idle(thread_id, timeout_s=OPENAI_THREAD_IDLE_TIMEOUT_SEC)  # 🔴
             await _messages_create_with_retry(thread_id, content, attachments, max_attempts=3)
 
             # 🔴 фоновый typing во время запроса ассистента
-            typing_task = asyncio.create_task(_typing_for(msg.bot, chat_id, 60))
+            typing_task = asyncio.create_task(
+                _typing_for(msg.bot, chat_id, TELEGRAM_TYPING_DURATION_SEC)
+            )  # 🔴 используем константу
 
             run = client.beta.threads.runs.create(
                 thread_id=thread_id,
@@ -421,8 +434,8 @@ async def schedule_processing(msg: Message, delay_sec: Optional[int] = None) -> 
                 run = client.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run.id)
                 if run.status in {"completed", "failed", "requires_action", "cancelled", "expired"}:
                     break
-                await asyncio.sleep(2)
-                if time.time() - started > 600:
+                await asyncio.sleep(OPENAI_RUN_POLL_INTERVAL_SEC)  # 🔴
+                if time.time() - started > OPENAI_RUN_TIMEOUT_SEC:  # 🔴
                     try:
                         client.beta.threads.runs.cancel(thread_id=thread_id, run_id=run.id)
                     except Exception:
@@ -444,14 +457,25 @@ async def schedule_processing(msg: Message, delay_sec: Optional[int] = None) -> 
             chunks = _split_for_delivery(clean) or [clean]
 
             # первая часть
-            typing_task = asyncio.create_task(_typing_for(msg.bot, chat_id, 15))
+            typing_task = asyncio.create_task(
+                _typing_for(msg.bot, chat_id, TELEGRAM_TYPING_RESPONSE_DURATION_SEC)
+            )  # 🔴
             resp = await msg.answer(chunks[0])
             typing_task.cancel()
             save_message(chat_id, 1, chunks[0], "text", None, getattr(resp, "message_id", None))
 
+            # --- Дублируем ответ ассистента в amoCRM чат --- 🔴 ВСТАВЬ СЮДА
+            try:
+                from amo_client import send_chat_message_to_amo
+                await send_chat_message_to_amo(chat_id, clean, "Assistant")
+            except Exception as e:
+                logging.warning(f"⚠️ Failed to send assistant reply to amoCRM: {e}")
+
             # остальные части
             for tail_part in chunks[1:]:
-                typing_task = asyncio.create_task(_typing_for(msg.bot, chat_id, 10))
+                typing_task = asyncio.create_task(
+                    _typing_for(msg.bot, chat_id, TELEGRAM_TYPING_TAIL_DURATION_SEC)
+                )  # 🔴
                 respN = await msg.answer(tail_part)
                 typing_task.cancel()
                 save_message(chat_id, 1, tail_part, "text", None, getattr(respN, "message_id", None))

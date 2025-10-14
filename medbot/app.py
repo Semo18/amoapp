@@ -32,7 +32,12 @@ from bot import setup_handlers  # регистрация Telegram-хэндлер
 from admin_api import router as admin_router  # REST для админки
 from repo import fetch_messages  # получение сообщений из БД
 from repo import upload_file_to_amo  # 🔴 загрузка файлов в amoCRM
-from constants import ALLOWED_ORIGINS  # 🔴 общие CORS источники
+from constants import (  # 🔴 общие константы
+    ALLOWED_ORIGINS,
+    TELEGRAM_FORWARD_TIMEOUT_SEC,
+    AMO_TOKEN_REFRESH_INTERVAL_SEC,
+    AMO_TOKEN_REFRESH_RETRY_SEC,
+)
 # ======================
 #     НАСТРОЙКА БАЗЫ
 # ======================
@@ -88,11 +93,11 @@ async def periodic_token_refresh() -> None:
                 logging.info("♻️ Scheduled amoCRM token refresh...")
                 await refresh_access_token()  # 🔴 обновление токена
                 logging.info("✅ amoCRM token refreshed successfully (scheduled)")
-                await asyncio.sleep(12 * 3600)  # 🔴 спим 12 часов до следующего цикла
+                await asyncio.sleep(AMO_TOKEN_REFRESH_INTERVAL_SEC)  # 🔴 спим до следующего цикла
             except Exception as exc:
                 logging.warning(f"⚠️ Failed scheduled token refresh: {exc}")
                 logging.info("🔁 Retrying amoCRM token refresh in 5 minutes...")
-                await asyncio.sleep(300)  # 🔴 повтор через 5 минут
+                await asyncio.sleep(AMO_TOKEN_REFRESH_RETRY_SEC)  # 🔴 повтор через заданный интервал
 
     asyncio.create_task(refresher())  # 🔴 запускаем цикл в фоне
 
@@ -169,7 +174,11 @@ async def telegram_webhook(request: Request) -> Dict[str, Any]:
     if AMO_WEBHOOK_URL:
         try:
             async with aiohttp.ClientSession() as session:
-                await session.post(AMO_WEBHOOK_URL, json=data, timeout=5)
+                await session.post(
+                    AMO_WEBHOOK_URL, 
+                    json=data, 
+                    timeout=TELEGRAM_FORWARD_TIMEOUT_SEC
+                )  # 🔴 используем константу таймаута
                 logging.info("📨 Telegram update forwarded to amoCRM webhook")
         except Exception as e:
             logging.warning(f"⚠️ Failed to forward Telegram update: {e}")
@@ -202,9 +211,10 @@ async def telegram_webhook(request: Request) -> Dict[str, Any]:
                 return {"ok": True}
 
             # 3) Текст сообщения — как примечание
+            # 3) Сообщение клиента — отправляем как chat message в amoCRM
             if text:
-                from amo_client import add_text_note  # 🔴 импорт после добавления функции
-                await add_text_note(lead_id=str(lead_id), text=text)
+                from amo_client import send_chat_message_to_amo
+                await send_chat_message_to_amo(chat_id, text, username)
 
             # 4) Вложения: загрузим файл в amo + прикрепим к сделке
             if "document" in msg or "photo" in msg:
@@ -243,12 +253,40 @@ async def health() -> Dict[str, str]:
 #   ВХОДЯЩИЕ СОБЫТИЯ ОТ AMOCRM
 # =====================================================
 
+
 @app.post("/medbot/amo-webhook")
 async def amo_webhook(request: Request):
-    """Приём уведомлений от amoCRM (создание/изменение сделок)."""
+    """
+    Приём событий amoCRM (новые сообщения из сделки).
+    Если сообщение is_incoming=False (от менеджера) —
+    пересылаем его в Telegram пользователю, но ассистент не отвечает.
+    """
     data = await request.json()
-    logging.info(f"📩 Получен webhook от amoCRM: {data}")
+    logging.info(f"📩 Вебхук amoCRM: {data}")
+
+    try:
+        events = data.get("_embedded", {}).get("events", [])
+        for ev in events:
+            if ev.get("type") != "chats_message":  # интересуют только чат-сообщения
+                continue
+            msg = ev.get("payload", {}).get("message", {})
+            chat_id_str = ev.get("payload", {}).get("chat_id", "")
+            if not chat_id_str.startswith("telegram-"):
+                continue
+            chat_id = int(chat_id_str.replace("telegram-", ""))
+            text = msg.get("text", "")
+            is_incoming = msg.get("is_incoming", True)
+
+            # от менеджера → пользователю
+            if not is_incoming and text:
+                await bot.send_message(chat_id, text)
+                logging.info(f"➡️ Отправлено пользователю из amoCRM: {text}")
+
+    except Exception as e:
+        logging.warning(f"⚠️ Ошибка обработки amoCRM webhook: {e}")
+
     return {"ok": True}
+
 
 # =====================================================
 #   ADMIN API, TELEGRAM ХЭНДЛЕРЫ, WEBHOOK SETUP
