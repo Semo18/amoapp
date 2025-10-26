@@ -13,10 +13,13 @@ from openai_client import schedule_processing, ensure_thread_choice  # функ�
 
 from constants import DEFAULT_REPLY_DELAY_SEC  # 🔴 централизованная задержка
 
+from amo_client import send_chat_message_v2  # 🔴 Chat API v2
+
 # На время разработки 60 сек; можно переопределить в .env -> REPLY_DELAY_SEC
 DELAY_SEC = int(os.getenv("REPLY_DELAY_SEC", str(DEFAULT_REPLY_DELAY_SEC)))  # 🔴
 
 router = Router()  # создаём маршрутизатор сообщений
+
 
 def setup_handlers(dp):  # подключаем все обработчики в диспетчер
     dp.include_router(router)  # регистрируем router внутри диспетчера
@@ -85,6 +88,38 @@ async def any_message(msg: Message, bot: Bot):
         ),
         message_id=getattr(msg, "message_id", None),  # телеграмный message_id (если нужен)
     )
+
+    # 🔴 Дублируем сообщение пользователя в amoCRM как ЧАТ (Chat API v2).
+    # Идея:
+    #  - При текстах шлём оригинал.
+    #  - Для нетекста отправляем короткую метку, чтобы менеджер видел факт.
+    #  - Ошибки не мешают основному сценарию — логируем и идём дальше.
+    text_for_amo = msg.text or ""  # текст для чата amoCRM
+    if not text_for_amo:  # если нет текста, ставим метку по типу вложения
+        if getattr(msg, "photo", None):
+            text_for_amo = "[photo]"
+        elif getattr(msg, "voice", None):
+            text_for_amo = "[voice]"
+        elif getattr(msg, "audio", None):
+            name = getattr(getattr(msg, "audio", None), "file_name", "") or ""
+            text_for_amo = f"[audio] {name}".strip()
+        elif getattr(msg, "document", None):
+            name = getattr(getattr(msg, "document", None),
+                           "file_name", "") or ""
+            text_for_amo = f"[file] {name}".strip()
+
+    if text_for_amo:  # отправляем только если есть что показать менеджеру
+        try:
+            await send_chat_message_v2(
+                os.getenv("AMO_CHAT_SCOPE_ID", ""),
+                chat_id,
+                text_for_amo,
+                username=(msg.from_user.full_name
+                          if getattr(msg, "from_user", None)
+                          else "User"),
+            )
+        except Exception as e:
+            logging.warning("⚠️ ChatAPI v2 user msg mirror failed: %s", e)
 
     # 🔴 Запускаем обработку в фоне (schedule_processing сам управляет задержкой и "печатает...")
     asyncio.create_task(schedule_processing(msg, delay_sec=DELAY_SEC))

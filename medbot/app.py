@@ -38,6 +38,14 @@ from constants import (  # 🔴 общие константы
     AMO_TOKEN_REFRESH_INTERVAL_SEC,
     AMO_TOKEN_REFRESH_RETRY_SEC,
 )
+
+import hashlib
+import hmac
+import datetime
+from fastapi import Request, HTTPException
+from aiogram import Bot
+
+
 # ======================
 #     НАСТРОЙКА БАЗЫ
 # ======================
@@ -338,3 +346,93 @@ async def api_messages(
         return data
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+def _hmac_sha1_hex(data: str, secret: str) -> str:
+    """Подпись X-Signature для Chat API."""
+    mac = hmac.new(secret.encode("utf-8"),
+                   data.encode("utf-8"),
+                   digestmod="sha1")
+    return mac.hexdigest().lower()
+
+
+@app.post("/medbot/amo-webhook/{scope_id}")  # 🔴
+async def amo_chat_webhook(scope_id: str, request: Request):
+    """
+    Принимаем события Chat API (amojo) от amoCRM.
+    Менеджер пишет из карточки → шлём в Telegram и НЕ включаем ассистента.
+    """
+    # Базовая защита: сверяем подпись, как требует Chat API.
+    # Секрет берём из env.
+    secret = os.getenv("AMO_CHAT_SECRET", "")
+    if not secret:
+        raise HTTPException(status_code=500, detail="Chat secret is empty")
+
+    # Читаем важные заголовки
+    date_hdr = request.headers.get("Date", "")
+    ct_hdr = request.headers.get("Content-Type", "application/json")
+    md5_hdr = request.headers.get("Content-MD5", "").lower()
+    sig_hdr = request.headers.get("X-Signature", "").lower()
+
+    # Считываем тело как bytes — MD5 должен считаться по байтам
+    body = await request.body()
+
+    # Проверяем MD5 (если прислали)
+    real_md5 = hashlib.md5(body).hexdigest().lower()
+    if md5_hdr and md5_hdr != real_md5:
+        raise HTTPException(status_code=400, detail="Bad Content-MD5")
+
+    # Строим путь для подписи
+    path = f"/medbot/amo-webhook/{scope_id}"
+
+    # Собираем строку подписи в той же схеме, что и при отправке
+    sign_str = "\n".join([
+        request.method.upper(),
+        md5_hdr,
+        ct_hdr,
+        date_hdr,
+        path,
+    ])
+    expected = _hmac_sha1_hex(sign_str, secret)
+
+    # Если подпись есть и не совпала — отклоняем
+    if sig_hdr and sig_hdr != expected:
+        raise HTTPException(status_code=401, detail="Bad signature")
+
+    # Парсим JSON и извлекаем полезные поля
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    evt = payload.get("event_type")
+    data = payload.get("payload", {}) or {}
+
+    if evt != "new_message":
+        # Можно спокойно 200-ить, чтобы amo не ретраило
+        return {"status": "ignored"}
+
+    # Восстанавливаем chat_id из conversation_id (tg_123...)
+    conv_id = (data.get("conversation_id") or "").strip()
+    if not conv_id.startswith("tg_"):
+        return {"status": "ignored"}
+
+    try:
+        chat_id = int(conv_id.replace("tg_", "", 1))
+    except ValueError:
+        return {"status": "ignored"}
+
+    msg = data.get("message", {}) or {}
+    text = (msg.get("text") or "").strip()
+    if not text:
+        return {"status": "ok"}
+
+    # Шлём текст менеджера в Telegram. Ассистента не трогаем.
+    bot = Bot(os.getenv("TELEGRAM_BOT_TOKEN"))
+    try:
+        await bot.send_message(chat_id, f"💬 Менеджер: {text}")
+    except Exception:
+        # Не роняем вебхук, amo повторит при 5xx
+        pass
+
+    return {"status": "ok"}

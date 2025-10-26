@@ -465,11 +465,17 @@ async def schedule_processing(msg: Message, delay_sec: Optional[int] = None) -> 
             save_message(chat_id, 1, chunks[0], "text", None, getattr(resp, "message_id", None))
 
             # --- Дублируем ответ ассистента в amoCRM чат --- 🔴 ВСТАВЬ СЮДА
+            # openai_client.py — у вас уже добавлено рядом с отправкой ответа в ТГ  # 🔴
             try:
-                from amo_client import send_chat_message_to_amo
-                await send_chat_message_to_amo(chat_id, clean, "Assistant")
+                from amo_client import send_chat_message_v2  # 🔴
+                await send_chat_message_v2(
+                    os.getenv("AMO_CHAT_SCOPE_ID"),  # 🔴 scope_id
+                    chat_id,                         # 🔴 tg chat_id
+                    clean,                           # 🔴 текст ответа ассистента
+                    "Assistant",
+                )
             except Exception as e:
-                logging.warning(f"⚠️ Failed to send assistant reply to amoCRM: {e}")
+                logging.warning("⚠️ Failed to send assistant reply to amoCRM: %s", e)
 
             # остальные части
             for tail_part in chunks[1:]:

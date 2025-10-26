@@ -11,6 +11,11 @@ from pathlib import Path
 from storage import set_lead_id, get_lead_id  # 🔴 связь chat_id → lead_id
 from typing import Optional
 from constants import AMO_REQUEST_TIMEOUT_SEC  # 🔴 таймаут для amoCRM API
+import hashlib  # для Content-MD5  # noqa: E402
+import hmac     # для HMAC-SHA1 подписи  # noqa: E402
+import base64   # иногда удобно, но тут не используем  # noqa: E402
+import datetime # для заголовка Date  # noqa: E402
+import json     # сериализация тела запроса  # noqa: E402
 
 # =============================
 #        НАСТРОЙКА ОКРУЖЕНИЯ
@@ -283,4 +288,111 @@ async def send_chat_message_to_amo(chat_id: int, text: str, username: str) -> bo
                 return ok
     except Exception as e:
         logging.warning(f"⚠️ send_chat_message_to_amo exception: {e}")
+        return False
+
+def _rfc1123_now_gmt() -> str:
+    """
+    Возвращает текущее время в формате RFC1123 (GMT).
+    Этот формат требуется заголовку Date в Chat API.
+    """
+    return datetime.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")
+
+
+def _hmac_sha1_hex(data: str, secret: str) -> str:
+    """
+    Возвращает нижний регистр hex HMAC-SHA1.
+    Подпись идёт в заголовок X-Signature.
+    """
+    mac = hmac.new(secret.encode("utf-8"),
+                   data.encode("utf-8"),
+                   digestmod="sha1")
+    return mac.hexdigest().lower()
+
+
+def _md5_hex_lower(payload_bytes: bytes) -> str:
+    """
+    MD5 от тела запроса в нижнем регистре — для заголовка Content-MD5.
+    Важно считать по байтам, включая возможные \n в конце.
+    """
+    return hashlib.md5(payload_bytes).hexdigest().lower()
+
+
+async def send_chat_message_v2(scope_id: str,
+                               chat_id: int,
+                               text: str,
+                               username: str | None = None) -> bool:
+    """
+    Отправляет событие new_message в Chat API (amojo) для созданного канала.
+
+    Стратегия:
+    1) Сформировать body события "new_message" (conversation_id — наш tg_id).
+    2) Посчитать Content-MD5 по bytes(body).
+    3) Собрать строку для подписи: METHOD, MD5, Content-Type, Date, path.
+    4) Подписать HMAC-SHA1 секретом канала → X-Signature.
+    5) POST на amojo.amocrm.ru по пути /v2/origin/custom/{scope_id}/chats.
+    """
+
+    # Берём секрет и (опционально) код канала из окружения
+    secret = os.getenv("AMO_CHAT_SECRET", "")
+    if not secret:
+        logging.warning("⚠️ AMO_CHAT_SECRET is empty")
+        return False
+
+    # Конструируем conversation_id: достаточно стабильной строки
+    # Здесь привязываемся к Telegram chat_id, чтобы «нить» чата была одна.
+    conversation_id = f"tg_{chat_id}"
+
+    # Собираем тело события Chat API
+    body = {
+        "event_type": "new_message",
+        "payload": {
+            "conversation_id": conversation_id,
+            "message": {
+                "text": text[:4000],  # бережёмся от слишком длинных
+            },
+            # Можно добавить "sender" при необходимости
+            # "sender": {"id": str(chat_id), "name": username or "User"},
+        },
+    }
+    body_bytes = json.dumps(body, ensure_ascii=False).encode("utf-8")
+
+    # Готовим заголовки
+    content_type = "application/json"
+    content_md5 = _md5_hex_lower(body_bytes)
+    date_gmt = _rfc1123_now_gmt()
+
+    # Путь для подписи и для URL — строго без домена/GET-параметров
+    path = f"/v2/origin/custom/{scope_id}/chats"
+
+    # Формируем строку подписи (порядок важен по документации)
+    sign_str = "\n".join([
+        "POST",             # метод капсом
+        content_md5,        # Content-MD5
+        content_type,       # Content-Type
+        date_gmt,           # Date
+        path,               # путь запроса
+    ])
+    signature = _hmac_sha1_hex(sign_str, secret)
+
+    # Отправляем запрос в amojo
+    url = f"https://amojo.amocrm.ru{path}"
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.post(
+                url,
+                data=body_bytes,  # отправляем bytes, чтобы MD5 совпал
+                headers={
+                    "Content-Type": content_type,
+                    "Content-MD5": content_md5,
+                    "Date": date_gmt,
+                    "X-Signature": signature,
+                },
+                timeout=AMO_REQUEST_TIMEOUT_SEC,
+            ) as r:
+                txt = await r.text()
+                ok = 200 <= r.status < 300
+                logging.info("💬 ChatAPI v2 send [%s]: %s", r.status, txt)
+                return ok
+    except Exception as e:
+        logging.warning("⚠️ ChatAPI v2 send exception: %s", e)
         return False
