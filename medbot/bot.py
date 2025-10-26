@@ -1,6 +1,7 @@
 # bot.py
 import os  # работа с переменными окружения (читаем настройки из .env или системы)
 import asyncio  # библиотека для работы с асинхронными задачами (параллельные действия)
+import logging
 from aiogram import Router, F, Bot  # Router — маршрутизация сообщений, F — фильтры, Bot — объект бота
 from aiogram.filters import CommandStart, Command  # фильтры для команд /start и других
 from aiogram.types import Message  # тип для входящих сообщений от пользователей
@@ -11,9 +12,13 @@ from repo import upsert_user_from_msg, save_message  # функции запис
 from texts import WELCOME, DISCLAIMER, ACK_DELAYED  # заранее заготовленные тексты для приветствия, дисклеймера и авто-ответа
 from openai_client import schedule_processing, ensure_thread_choice  # функции для интеграции с OpenAI
 
-from constants import DEFAULT_REPLY_DELAY_SEC  # 🔴 централизованная задержка
+from constants import (
+    DEFAULT_REPLY_DELAY_SEC,
+    TELEGRAM_TYPING_ACK_DURATION_SEC,
+)  # 🔴
 
 from amo_client import send_chat_message_v2  # 🔴 Chat API v2
+
 
 # На время разработки 60 сек; можно переопределить в .env -> REPLY_DELAY_SEC
 DELAY_SEC = int(os.getenv("REPLY_DELAY_SEC", str(DEFAULT_REPLY_DELAY_SEC)))  # 🔴
@@ -88,6 +93,27 @@ async def any_message(msg: Message, bot: Bot):
         ),
         message_id=getattr(msg, "message_id", None),  # телеграмный message_id (если нужен)
     )
+
+    # 2) Авто-квиток (ACK) — редкий, чтобы не спамить.
+    try:
+        # Решение: отправляем ACK не чаще установленного кулдауна.
+        if should_ack(chat_id):  # хранит TTL в Redis (секунды)
+            # Лёгкая анимация "печатает..." на короткое время, чтобы ощущалось живо.
+            async def _typing_ack() -> None:
+                try:
+                    until = asyncio.get_event_loop().time() + \
+                        TELEGRAM_TYPING_ACK_DURATION_SEC
+                    while asyncio.get_event_loop().time() < until:
+                        await bot.send_chat_action(chat_id, ChatAction.TYPING)
+                        await asyncio.sleep(4)
+                except Exception:
+                    pass
+
+            task = asyncio.create_task(_typing_ack())
+            await msg.answer(ACK_DELAYED)  # короткая живая квитанция
+            task.cancel()
+    except Exception as e:  # не блокируем основной сценарий
+        logging.warning("⚠️ ACK send failed: %s", e)
 
     # 🔴 Дублируем сообщение пользователя в amoCRM как ЧАТ (Chat API v2).
     # Идея:

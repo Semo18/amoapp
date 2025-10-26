@@ -237,58 +237,9 @@ async def add_file_note(lead_id: str, uuid: str, file_name: str = "") -> bool:
     except Exception as e:
         logging.warning(f"⚠️ add_file_note exception: {e}")
         return False
-
 # =======================================
 #      🧩 amoCRM Chat API (двусторонняя интеграция)
 # =======================================
-
-async def send_chat_message_to_amo(chat_id: int, text: str, username: str) -> bool:
-    """
-    Отправляет сообщение клиента в amoCRM как chat message (а не note).
-    chat_id — ID Telegram-пользователя.
-    """
-    access_token = os.getenv("AMO_ACCESS_TOKEN")
-    if not access_token:
-        logging.warning("⚠️ No AMO_ACCESS_TOKEN in env")
-        return False
-
-    chat_uid = f"telegram-{chat_id}"  # уникальный chat_id amoCRM
-    payload = {
-        "add": [
-            {
-                "chat_id": chat_uid,
-                "message": {
-                    "text": text,
-                    "type": "text",
-                    "external_id": f"tg_{chat_id}_{int(asyncio.get_event_loop().time())}",
-                },
-                "user": {"id": str(chat_id), "name": username or f"User {chat_id}"},
-            }
-        ]
-    }
-
-    url = f"{AMO_API_URL}/api/v4/chats/messages"
-    try:
-        async with aiohttp.ClientSession() as s:
-            async with s.post(
-                url,
-                headers={
-                    "Authorization": f"Bearer {access_token}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-                timeout=AMO_REQUEST_TIMEOUT_SEC,
-            ) as r:
-                txt = await r.text()
-                ok = 200 <= r.status < 300
-                logging.info(f"💬 send_chat_message_to_amo [{r.status}]: {txt}")
-                if r.status == 401:
-                    await refresh_access_token()
-                    return await send_chat_message_to_amo(chat_id, text, username)
-                return ok
-    except Exception as e:
-        logging.warning(f"⚠️ send_chat_message_to_amo exception: {e}")
-        return False
 
 def _rfc1123_now_gmt() -> str:
     """
@@ -317,70 +268,71 @@ def _md5_hex_lower(payload_bytes: bytes) -> str:
     return hashlib.md5(payload_bytes).hexdigest().lower()
 
 
-async def send_chat_message_v2(scope_id: str,
-                               chat_id: int,
-                               text: str,
-                               username: str | None = None) -> bool:
+async def send_chat_message_v2(
+    scope_id: str,
+    chat_id: int,
+    text: str,
+    username: str | None = None
+) -> bool:
     """
     Отправляет событие new_message в Chat API (amojo) для созданного канала.
 
     Стратегия:
-    1) Сформировать body события "new_message" (conversation_id — наш tg_id).
-    2) Посчитать Content-MD5 по bytes(body).
-    3) Собрать строку для подписи: METHOD, MD5, Content-Type, Date, path.
-    4) Подписать HMAC-SHA1 секретом канала → X-Signature.
-    5) POST на amojo.amocrm.ru по пути /v2/origin/custom/{scope_id}/chats.
+      1) Формируем тело события "new_message"
+         (conversation_id — tg_<chat_id>, user — отправитель)
+      2) Считаем Content-MD5 по байтам JSON-тела
+      3) Собираем строку подписи: METHOD, MD5, Content-Type, Date, path
+      4) Подписываем HMAC-SHA1 секретом канала (AMO_CHAT_SECRET)
+      5) POST на amojo.amocrm.ru/v2/origin/custom/{scope_id}/chats
     """
 
-    # Берём секрет и (опционально) код канала из окружения
     secret = os.getenv("AMO_CHAT_SECRET", "")
     if not secret:
-        logging.warning("⚠️ AMO_CHAT_SECRET is empty")
+        logging.warning("⚠️ Chat v2: no AMO_CHAT_SECRET in env")
         return False
 
-    # Конструируем conversation_id: достаточно стабильной строки
-    # Здесь привязываемся к Telegram chat_id, чтобы «нить» чата была одна.
-    conversation_id = f"tg_{chat_id}"
+    if not scope_id:
+        logging.warning("⚠️ Chat v2: empty scope_id")
+        return False
 
-    # Собираем тело события Chat API
-    body = {
+    # --- тело события (минимум требуемых полей) ---
+    payload = {
         "event_type": "new_message",
         "payload": {
-            "conversation_id": conversation_id,
-            "message": {
-                "text": text[:4000],  # бережёмся от слишком длинных
+            "conversation_id": f"tg_{chat_id}",
+            "message": {"text": text[:4000] if text else ""},
+            "user": {  # 🔴 обязательный блок
+                "id": str(chat_id),
+                "name": username or f"User {chat_id}",
             },
-            # Можно добавить "sender" при необходимости
-            # "sender": {"id": str(chat_id), "name": username or "User"},
         },
     }
-    body_bytes = json.dumps(body, ensure_ascii=False).encode("utf-8")
 
-    # Готовим заголовки
+    body_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+    # --- вычисляем служебные заголовки ---
     content_type = "application/json"
     content_md5 = _md5_hex_lower(body_bytes)
     date_gmt = _rfc1123_now_gmt()
-
-    # Путь для подписи и для URL — строго без домена/GET-параметров
     path = f"/v2/origin/custom/{scope_id}/chats"
 
-    # Формируем строку подписи (порядок важен по документации)
+    # --- строим строку подписи ---
     sign_str = "\n".join([
-        "POST",             # метод капсом
-        content_md5,        # Content-MD5
-        content_type,       # Content-Type
-        date_gmt,           # Date
-        path,               # путь запроса
+        "POST",
+        content_md5,
+        content_type,
+        date_gmt,
+        path,
     ])
     signature = _hmac_sha1_hex(sign_str, secret)
 
-    # Отправляем запрос в amojo
+    # --- выполняем запрос ---
     url = f"https://amojo.amocrm.ru{path}"
     try:
         async with aiohttp.ClientSession() as s:
             async with s.post(
                 url,
-                data=body_bytes,  # отправляем bytes, чтобы MD5 совпал
+                data=body_bytes,
                 headers={
                     "Content-Type": content_type,
                     "Content-MD5": content_md5,
@@ -390,9 +342,8 @@ async def send_chat_message_v2(scope_id: str,
                 timeout=AMO_REQUEST_TIMEOUT_SEC,
             ) as r:
                 txt = await r.text()
-                ok = 200 <= r.status < 300
-                logging.info("💬 ChatAPI v2 send [%s]: %s", r.status, txt)
-                return ok
+                logging.info(f"💬 ChatAPI v2 send [{r.status}]: {txt}")
+                return 200 <= r.status < 300
     except Exception as e:
-        logging.warning("⚠️ ChatAPI v2 send exception: %s", e)
+        logging.warning(f"⚠️ ChatAPI v2 send exception: {e}")
         return False
