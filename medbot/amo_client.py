@@ -275,48 +275,61 @@ async def send_chat_message_v2(
     username: str | None = None
 ) -> bool:
     """
-    Отправляет событие new_message в Chat API (amojo) для созданного канала.
+    Отправляет событие new_message в Chat API (amojo) для зарегистрированного канала.
 
-    Стратегия:
-      1) Формируем тело события "new_message"
-         (conversation_id — tg_<chat_id>, user — отправитель)
-      2) Считаем Content-MD5 по байтам JSON-тела
-      3) Собираем строку подписи: METHOD, MD5, Content-Type, Date, path
-      4) Подписываем HMAC-SHA1 секретом канала (AMO_CHAT_SECRET)
-      5) POST на amojo.amocrm.ru/v2/origin/custom/{scope_id}/chats
+    🚀 Логика:
+    1. Формируем JSON-пакет события new_message с полями conversation_id и sender.
+    2. Считаем MD5 от тела запроса для заголовка Content-MD5.
+    3. Формируем строку подписи и вычисляем HMAC-SHA1 по секретному ключу канала.
+    4. Отправляем POST-запрос на https://amojo.amocrm.ru/v2/origin/custom/{scope_id}/chats
+    5. Возвращаем True, если код ответа 2xx.
     """
 
+    # --- базовые проверки окружения ---
     secret = os.getenv("AMO_CHAT_SECRET", "")
     if not secret:
-        logging.warning("⚠️ Chat v2: no AMO_CHAT_SECRET in env")
+        logging.warning("⚠️ Chat v2: нет AMO_CHAT_SECRET в env")
         return False
 
     if not scope_id:
-        logging.warning("⚠️ Chat v2: empty scope_id")
+        logging.warning("⚠️ Chat v2: пустой scope_id")
         return False
 
-    # --- тело события (минимум требуемых полей) ---
+    # --- тело события в максимально совместимом формате ---
+    conv_id = f"tg_{chat_id}"
     payload = {
         "event_type": "new_message",
         "payload": {
-            "conversation_id": f"tg_{chat_id}",
-            "message": {"text": text[:4000] if text else ""},
-            "user": {  # 🔴 обязательный блок
+            # Указываем оба поля conversation_id и conversation.id
+            "conversation_id": conv_id,
+            "conversation": {"id": conv_id},
+
+            # Само сообщение: обязательно тип и текст
+            "message": {
+                "type": "text",
+                "text": (text or "")[:4000],
+            },
+
+            # Отправитель: дублируем в user и sender для разных версий API
+            "user": {
+                "id": str(chat_id),
+                "name": username or f"User {chat_id}",
+            },
+            "sender": {
                 "id": str(chat_id),
                 "name": username or f"User {chat_id}",
             },
         },
     }
 
+    # --- сериализация и подготовка к подписи ---
     body_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-
-    # --- вычисляем служебные заголовки ---
     content_type = "application/json"
     content_md5 = _md5_hex_lower(body_bytes)
     date_gmt = _rfc1123_now_gmt()
     path = f"/v2/origin/custom/{scope_id}/chats"
 
-    # --- строим строку подписи ---
+    # --- формируем подпись HMAC-SHA1 ---
     sign_str = "\n".join([
         "POST",
         content_md5,
@@ -326,7 +339,14 @@ async def send_chat_message_v2(
     ])
     signature = _hmac_sha1_hex(sign_str, secret)
 
-    # --- выполняем запрос ---
+    # --- логируем тело для отладки (безопасно) ---
+    try:
+        safe_preview = body_bytes.decode("utf-8")
+        logging.info("💬 ChatAPI v2 payload: %s", safe_preview[:500])
+    except Exception:
+        pass
+
+    # --- выполняем запрос к amojo ---
     url = f"https://amojo.amocrm.ru{path}"
     try:
         async with aiohttp.ClientSession() as s:
