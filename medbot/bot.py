@@ -96,56 +96,65 @@ async def any_message(msg: Message, bot: Bot):
 
     # 2) Авто-квиток (ACK) — редкий, чтобы не спамить.
     try:
-        # Решение: отправляем ACK не чаще установленного кулдауна.
-        if should_ack(chat_id):  # хранит TTL в Redis (секунды)
-            # Лёгкая анимация "печатает..." на короткое время, чтобы ощущалось живо.
+        # Идея ACK: отправляем «квитанцию» не чаще кулдауна, чтобы не спамить.
+        if should_ack(chat_id):  # TTL хранится в Redis  # 🔴
             async def _typing_ack() -> None:
+                # Короткая «печатает…», чтобы диалог ощущался живым.  # 🔴
                 try:
-                    until = asyncio.get_event_loop().time() + \
-                        TELEGRAM_TYPING_ACK_DURATION_SEC
-                    while asyncio.get_event_loop().time() < until:
+                    loop = asyncio.get_event_loop()
+                    until = loop.time() + TELEGRAM_TYPING_ACK_DURATION_SEC
+                    while loop.time() < until:
                         await bot.send_chat_action(chat_id, ChatAction.TYPING)
                         await asyncio.sleep(4)
                 except Exception:
+                    # Не ломаем основной поток, просто гасим любые сбои.  # 🔴
                     pass
 
             task = asyncio.create_task(_typing_ack())
-            await msg.answer(ACK_DELAYED)  # короткая живая квитанция
+            await msg.answer(ACK_DELAYED)  # короткая квитанция  # 🔴
             task.cancel()
-    except Exception as e:  # не блокируем основной сценарий
+    except Exception as e:
+        # ACK – необязателен. Любая ошибка не блокирует сценарий.  # 🔴
         logging.warning("⚠️ ACK send failed: %s", e)
 
-    # 🔴 Дублируем сообщение пользователя в amoCRM как ЧАТ (Chat API v2).
-    # Идея:
-    #  - При текстах шлём оригинал.
-    #  - Для нетекста отправляем короткую метку, чтобы менеджер видел факт.
-    #  - Ошибки не мешают основному сценарию — логируем и идём дальше.
-    text_for_amo = msg.text or ""  # текст для чата amoCRM
-    if not text_for_amo:  # если нет текста, ставим метку по типу вложения
+    # Дублируем сообщение пользователя в amoCRM как ЧАТ через Chat API v2.  # 🔴
+    # Стратегия: если текст есть — отправляем его; если нет — короткую метку.  # 🔴
+    text_for_amo = (msg.text or "").strip()
+    if not text_for_amo:
+        # Для нетекстовых вложений показываем тип, чтобы менеджер видел факт.  # 🔴
         if getattr(msg, "photo", None):
             text_for_amo = "[photo]"
         elif getattr(msg, "voice", None):
             text_for_amo = "[voice]"
         elif getattr(msg, "audio", None):
-            name = getattr(getattr(msg, "audio", None), "file_name", "") or ""
-            text_for_amo = f"[audio] {name}".strip()
+            fname = getattr(getattr(msg, "audio", None), "file_name", "") or ""
+            text_for_amo = f"[audio] {fname}".strip()
         elif getattr(msg, "document", None):
-            name = getattr(getattr(msg, "document", None),
-                           "file_name", "") or ""
-            text_for_amo = f"[file] {name}".strip()
+            fname = getattr(getattr(msg, "document", None), "file_name", "") or ""
+            text_for_amo = f"[file] {fname}".strip()
 
-    if text_for_amo:  # отправляем только если есть что показать менеджеру
+    scope_id = os.getenv("AMO_CHAT_SCOPE_ID", "").strip()  # 🔴
+    if text_for_amo and scope_id:
+        # Ограничиваем длину (практичный предел для Chat API ~4k).  # 🔴
+        payload_text = text_for_amo[:4000]
+        # Безопасно получаем имя отправителя (fallback — User <id>).  # 🔴
+        sender_name = (
+            getattr(getattr(msg, "from_user", None), "full_name", None)
+            or f"User {chat_id}"
+        )
         try:
-            await send_chat_message_v2(
-                os.getenv("AMO_CHAT_SCOPE_ID", ""),
+            ok = await send_chat_message_v2(
+                scope_id,
                 chat_id,
-                text_for_amo,
-                username=(msg.from_user.full_name
-                          if getattr(msg, "from_user", None)
-                          else "User"),
+                payload_text,
+                username=sender_name,
             )
+            if not ok:
+                logging.warning(
+                    "⚠️ ChatAPI v2 mirror returned False (scope=%s)", scope_id
+                )
         except Exception as e:
             logging.warning("⚠️ ChatAPI v2 user msg mirror failed: %s", e)
 
-    # 🔴 Запускаем обработку в фоне (schedule_processing сам управляет задержкой и "печатает...")
+    # Главная обработка ассистентом уходит в фон, чтобы не блокировать UX.  # 🔴
     asyncio.create_task(schedule_processing(msg, delay_sec=DELAY_SEC))
