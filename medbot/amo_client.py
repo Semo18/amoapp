@@ -243,23 +243,33 @@ async def add_file_note(lead_id: str, uuid: str, file_name: str = "") -> bool:
 #      🧩 amoCRM Chat API (origin/custom)
 # =======================================
 
+# --- helpers (оставьте рядом с остальными) -------------------------------
 
-def _rfc1123_now_gmt() -> str:
-    """RFC1123 дата в UTC для заголовка Date."""
+
+def _rfc2822_now_utc() -> str:
+    """RFC2822-тimestamp в UTC для заголовка Date (пример amo)."""
     now = datetime.datetime.now(datetime.timezone.utc)
-    return now.strftime("%a, %d %b %Y %H:%M:%S GMT")
+    return now.strftime("%a, %d %b %Y %H:%M:%S +0000")  # без 'GMT'
 
 
 def _md5_hex_lower(data: bytes) -> str:
-    """MD5 от сырого тела, hex в нижнем регистре."""
+    """MD5 тела, hex lower."""
     return hashlib.md5(data).hexdigest().lower()
 
 
+def _md5_base64(data: bytes) -> str:
+    """MD5 тела, base64 (некоторые кластеры amojo требуют именно это)."""
+    dig = hashlib.md5(data).digest()
+    return base64.b64encode(dig).decode("ascii")
+
+
 def _hmac_sha1_hex(src: str, secret: str) -> str:
-    """HMAC-SHA1 подпись строки src секретом канала, hex lower."""
-    dig = hmac.new(secret.encode("utf-8"), src.encode("utf-8"),
-                   hashlib.sha1).hexdigest()
-    return dig.lower()
+    """HMAC-SHA1(src, secret) → hex lower."""
+    return hmac.new(secret.encode("utf-8"),
+                    src.encode("utf-8"),
+                    hashlib.sha1).hexdigest().lower()
+
+# --- отправка (замените тело функции; комментарии высокоуровневые) -------
 
 
 async def send_chat_message_v2(
@@ -269,86 +279,86 @@ async def send_chat_message_v2(
     username: str | None = None,
 ) -> bool:
     """
-    Отправляем событие "new_message" в Chat API (origin/custom).
-
-    Идея:
-      1) Собираем минимально валидный payload в snake_case:
-         conversation_id, user{id,name}, message{type,text}.
-      2) Кодируем JSON плотно (без пробелов) и считаем Content-MD5.
-      3) Строим строку подписи: METHOD, MD5, Content-Type, Date, path.
-      4) Подписываем HMAC-SHA1 секретом, шлём POST на amojo.
-      5) Логируем короткий payload, чтобы видеть, что именно уходит.
+    Отправка new_message в Chat API (origin/custom) с авто-ретраем:
+    1) Плотный JSON (без пробелов), snake+camel дубли ключей,
+       user+sender — чтоб пройти разные валидаторы.
+    2) Пытаемся с MD5 hex → если 400/VALIDATION_ERROR, ретраим с MD5 base64.
+    3) Подпись собираем ровно: METHOD, MD5, Content-Type, Date(RFC2822), path.
     """
+
     secret = os.getenv("AMO_CHAT_SECRET", "")
-    if not secret:
-        logging.warning("⚠️ Chat v2: AMO_CHAT_SECRET is empty")
-        return False
-    if not scope_id:
-        logging.warning("⚠️ Chat v2: scope_id is empty")
+    if not secret or not scope_id:
+        logging.warning("⚠️ Chat v2: secret/scope отсутствуют")
         return False
 
-    # -- 1) Минимально валидный payload в snake_case --
+    cid = f"tg_{chat_id}"  # внешний ID диалога в нашей системе
+
+    # — минимально валидное тело + «двойные» ключи для совместимости —
     payload = {
         "event_type": "new_message",
         "payload": {
-            "conversation_id": f"tg_{chat_id}",
-            "conversationId": f"tg_{chat_id}",          # 🔴 дублируем camelCase
-            "conversation": {"id": f"tg_{chat_id}"},    # 🔴 добавляем объект
-            "message": {
-                "type": "text",
-                "text": (text or "")[:4000],
-            },
-            "user": {                                   # 🔴 оба варианта
-                "id": str(chat_id),
-                "name": username or f"User {chat_id}",
-            },
-            "sender": {                                 # 🔴 дублируем user
-                "id": str(chat_id),
-                "name": username or f"User {chat_id}",
-            },
+            "conversation_id": cid,
+            "conversationId": cid,
+            "conversation": {"id": cid},
+            "message": {"type": "text", "text": (text or "")[:4000]},
+            "user": {"id": str(chat_id), "name": (username or f"User {chat_id}")[:128]},
+            "sender": {"id": str(chat_id), "name": (username or f"User {chat_id}")[:128]},
         },
     }
 
-    # -- 2) Готовим тело запроса (байты) и служебные заголовки --
-    body_bytes = json.dumps(payload, ensure_ascii=False,
-                            separators=(",", ":")).encode("utf-8")
-    content_type = "application/json"
-    content_md5 = _md5_hex_lower(body_bytes)
-    date_gmt = _rfc1123_now_gmt()
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    body_bytes = body.encode("utf-8")
+
     path = f"/v2/origin/custom/{scope_id}/chats"
     url = f"https://amojo.amocrm.ru{path}"
+    ctype = "application/json"
 
-    # -- 3) Подпись: METHOD, MD5, Content-Type, Date, path --
-    sign_src = "\n".join(["POST", content_md5, content_type, date_gmt, path])
-    signature = _hmac_sha1_hex(sign_src, secret)
+    async def _post_with(md5_value: str) -> tuple[int, str]:
+        """Собираем подпись под указанный MD5 и шлём."""
+        date_hdr = _rfc2822_now_utc()  # пример из доков — RFC2822 +0000
+        sign_src = "\n".join(["POST", md5_value, ctype, date_hdr, path])
+        sign = _hmac_sha1_hex(sign_src, secret)
 
-    # -- 4) Диагностический лог (без длинных полей) --
-    try:
-        dbg = json.loads(body_bytes.decode("utf-8"))
-        dbg["payload"]["message"]["text"] = \
-            dbg["payload"]["message"]["text"][:120]
-        logging.info("💬 ChatAPI v2 payload: %s",
-                     json.dumps(dbg, ensure_ascii=False))
-    except Exception:
-        pass
+        # Диагностический лог — поможет, если подпись не зайдёт
+        logging.info("🔐 ChatAPI v2 sign src: %s", sign_src)
 
-    # -- 5) HTTP POST на amojo --
-    try:
         async with aiohttp.ClientSession() as s:
             async with s.post(
                 url,
                 data=body_bytes,
                 headers={
-                    "Content-Type": content_type,
-                    "Content-MD5": content_md5,
-                    "Date": date_gmt,
-                    "X-Signature": signature,
+                    "Date": date_hdr,
+                    "Content-Type": ctype,
+                    "Content-MD5": md5_value,
+                    "X-Signature": sign,
+                    "Accept": "application/json",
                 },
                 timeout=AMO_REQUEST_TIMEOUT_SEC,
             ) as r:
-                txt = await r.text()
-                logging.info("💬 ChatAPI v2 send [%s]: %s", r.status, txt)
-                return 200 <= r.status < 300
-    except Exception as e:
-        logging.warning("⚠️ ChatAPI v2 send exception: %s", e)
-        return False
+                return r.status, await r.text()
+
+    # Отладочный payload (усечённый текст)
+    try:
+        dbg = json.loads(body)
+        dbg["payload"]["message"]["text"] = dbg["payload"]["message"]["text"][:120]
+        logging.info("💬 ChatAPI v2 payload: %s", json.dumps(dbg, ensure_ascii=False))
+    except Exception:
+        pass
+
+    # 1-я попытка: MD5 hex
+    md5_hex = _md5_hex_lower(body_bytes)
+    st, txt = await _post_with(md5_hex)
+    logging.info("💬 ChatAPI v2 send [hex][%s]: %s", st, txt)
+    if 200 <= st < 300:
+        return True
+
+    # Если сервер «не видит» поля — пробуем MD5 base64 (частый кейс)
+    if st == 400 and "VALIDATION_ERROR" in txt and (
+        "ConversationId" in txt or "User" in txt
+    ):
+        md5_b64 = _md5_base64(body_bytes)
+        st2, txt2 = await _post_with(md5_b64)
+        logging.info("💬 ChatAPI v2 send [b64][%s]: %s", st2, txt2)
+        return 200 <= st2 < 300
+
+    return False
