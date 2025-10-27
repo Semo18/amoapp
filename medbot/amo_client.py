@@ -16,6 +16,8 @@ import hmac     # для HMAC-SHA1 подписи  # noqa: E402
 import base64   # иногда удобно, но тут не используем  # noqa: E402
 import datetime # для заголовка Date  # noqa: E402
 import json     # сериализация тела запроса  # noqa: E402
+import binascii  # 🔴 для hex→bytes
+
 
 # =============================
 #        НАСТРОЙКА ОКРУЖЕНИЯ
@@ -264,10 +266,26 @@ def _md5_base64(data: bytes) -> str:
 
 
 def _hmac_sha1_hex(src: str, secret: str) -> str:
-    """HMAC-SHA1(src, secret) → hex lower."""
-    return hmac.new(secret.encode("utf-8"),
-                    src.encode("utf-8"),
-                    hashlib.sha1).hexdigest().lower()
+    """
+    Возвращает HMAC-SHA1(src, key) в hex lower.
+
+    Стратегия:
+      • Если secret выглядит как hex (40/64 и только 0-9a-f), трактуем его
+        как сырой ключ: hex → bytes. Это нужно для amojo secret_key.
+      • Иначе используем исходную строку в utf-8 как ключ.
+    """
+    # Пробуем распознать hex-ключ (частый случай для amojo)  # 🔴
+    is_hex = (
+        len(secret) in (40, 64)
+        and all(c in "0123456789abcdef" for c in secret.lower())
+    )
+    if is_hex:  # hex → bytes как ключ HMAC  # 🔴
+        key = binascii.unhexlify(secret)
+    else:
+        key = secret.encode("utf-8")
+
+    mac = hmac.new(key, src.encode("utf-8"), hashlib.sha1)  # 🔴
+    return mac.hexdigest().lower()  # 🔴
 
 # --- отправка (замените тело функции; комментарии высокоуровневые) -------
 
