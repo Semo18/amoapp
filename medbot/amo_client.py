@@ -292,13 +292,19 @@ async def send_chat_message_v2(
         "event_type": "new_message",
         "payload": {
             "conversation_id": f"tg_{chat_id}",
-            "user": {
-                "id": str(chat_id),
-                "name": (username or f"User {chat_id}")[:128],
-            },
+            "conversationId": f"tg_{chat_id}",          # 🔴 дублируем camelCase
+            "conversation": {"id": f"tg_{chat_id}"},    # 🔴 добавляем объект
             "message": {
                 "type": "text",
                 "text": (text or "")[:4000],
+            },
+            "user": {                                   # 🔴 оба варианта
+                "id": str(chat_id),
+                "name": username or f"User {chat_id}",
+            },
+            "sender": {                                 # 🔴 дублируем user
+                "id": str(chat_id),
+                "name": username or f"User {chat_id}",
             },
         },
     }
