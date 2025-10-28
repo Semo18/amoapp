@@ -44,6 +44,7 @@ sudo nano /etc/systemd/system/medbot.service
 # на сервере
 sudo -iu deployer          # работаем от имени владельца файлов
 cd /var/www/medbot
+source .venv/bin/activate (включить виртуальное окружение)
 pwd && ls -la
 
 # Или проверь, где ещё лежит код:

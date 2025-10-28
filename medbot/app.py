@@ -370,37 +370,41 @@ def _hmac_sha1_hex(data: str, secret: str) -> str:
                    digestmod="sha1")
     return mac.hexdigest().lower()
 
+# =====================================================
+#   ВХОДЯЩИЕ СОБЫТИЯ ОТ AMO CHAT API (amojo → к нам)
+# =====================================================
 
-@app.post("/medbot/amo-webhook/{scope_id}")  # 🔴
+@app.post("/medbot/amo-webhook/{scope_id}")
 async def amo_chat_webhook(scope_id: str, request: Request):
     """
     Принимаем события Chat API (amojo) от amoCRM.
     Менеджер пишет из карточки → шлём в Telegram и НЕ включаем ассистента.
+
+    Важно:
+    • amo может прислать два слегка разных варианта схемы:
+      a) top-level:    {"event_type", "conversation_id", "payload":{"message":...}}
+      b) внутри payload: {"event_type", "payload":{"conversation_id", "message":...}}
+    • Мы поддерживаем оба.
     """
-    # Базовая защита: сверяем подпись, как требует Chat API.
-    # Секрет берём из env.
+    # 1) Секрет для подписи
     secret = os.getenv("AMO_CHAT_SECRET", "")
     if not secret:
         raise HTTPException(status_code=500, detail="Chat secret is empty")
 
-    # Читаем важные заголовки
+    # 2) Читаем заголовки, тело и сразу считаем MD5 по bytes (без \n)
     date_hdr = request.headers.get("Date", "")
     ct_hdr = request.headers.get("Content-Type", "application/json")
-    md5_hdr = request.headers.get("Content-MD5", "").lower()
-    sig_hdr = request.headers.get("X-Signature", "").lower()
-
-    # Считываем тело как bytes — MD5 должен считаться по байтам
+    md5_hdr = (request.headers.get("Content-MD5", "") or "").lower()
+    sig_hdr = (request.headers.get("X-Signature", "") or "").lower()
     body = await request.body()
-
-    # Проверяем MD5 (если прислали)
     real_md5 = hashlib.md5(body).hexdigest().lower()
+
+    # 3) Если amo прислало Content-MD5 — валидируем (если нет, не валим)
     if md5_hdr and md5_hdr != real_md5:
         raise HTTPException(status_code=400, detail="Bad Content-MD5")
 
-    # Строим путь для подписи
+    # 4) Собираем строку подписи так же, как при отправке
     path = f"/medbot/amo-webhook/{scope_id}"
-
-    # Собираем строку подписи в той же схеме, что и при отправке
     sign_str = "\n".join([
         request.method.upper(),
         md5_hdr,
@@ -410,44 +414,52 @@ async def amo_chat_webhook(scope_id: str, request: Request):
     ])
     expected = _hmac_sha1_hex(sign_str, secret)
 
-    # Если подпись есть и не совпала — отклоняем
+    # 5) Если подпись присутствует и не совпала — 401
     if sig_hdr and sig_hdr != expected:
         raise HTTPException(status_code=401, detail="Bad signature")
 
-    # Парсим JSON и извлекаем полезные поля
+    # 6) Парсим JSON
     try:
         payload = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
+    # 7) Тип события
     evt = payload.get("event_type")
-    data = payload.get("payload", {}) or {}
-
     if evt != "new_message":
-        # Можно спокойно 200-ить, чтобы amo не ретраило
-        return {"status": "ignored"}
+        return {"status": "ignored"}  # только чат-сообщения интересуют
 
-    # Восстанавливаем chat_id из conversation_id (tg_123...)
-    conv_id = (data.get("conversation_id") or "").strip()
+    # 8) Амбидекстр: достаём conversation_id и message из top-level ИЛИ из payload
+    top_conv = (payload.get("conversation_id") or "").strip()
+    top_user  = payload.get("user") or {}  # может быть, но нам не обязателен
+
+    pl = payload.get("payload") or {}
+    pl_conv = (pl.get("conversation_id") or pl.get("conversationId") or "").strip()
+    pl_msg  = pl.get("message") or {}
+
+    # берём conv_id в приоритете: top-level → внутри payload
+    conv_id = top_conv or pl_conv
+    msg_obj = (payload.get("message") or {}) or pl_msg  # если вдруг amo пошлёт top-level message
+
+    # 9) Проверяем формат нашего канала: tg_{chat_id}
     if not conv_id.startswith("tg_"):
-        return {"status": "ignored"}
+        return {"status": "ignored"}  # это не чат нашего origin/custom
 
     try:
         chat_id = int(conv_id.replace("tg_", "", 1))
     except ValueError:
         return {"status": "ignored"}
 
-    msg = data.get("message", {}) or {}
-    text = (msg.get("text") or "").strip()
+    # 10) Текст сообщения менеджера
+    text = (msg_obj.get("text") or "").strip()
     if not text:
-        return {"status": "ok"}
+        return {"status": "ok"}  # нечего слать
 
-    # Шлём текст менеджера в Telegram. Ассистента не трогаем.
-    bot = Bot(os.getenv("TELEGRAM_BOT_TOKEN"))
+    # 11) Отправляем в Telegram (без ассистента)
     try:
         await bot.send_message(chat_id, f"💬 Менеджер: {text}")
-    except Exception:
-        # Не роняем вебхук, amo повторит при 5xx
-        pass
+        logging.info("➡️ amo → Telegram delivered to %s: %s", chat_id, text)
+    except Exception as e:
+        logging.warning("⚠️ Failed to deliver amo→TG: %s", e)
 
     return {"status": "ok"}
