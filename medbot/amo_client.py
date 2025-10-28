@@ -1,14 +1,30 @@
- amo_client.py (фрагменты, ключевые изменения)
+# amo_client.py
+# 🔴 Подсистема интеграции с amoCRM:
+# - автообновление токена по refresh_token
+# - создание контактов и сделок
+# - добавление примечаний к существующим сделкам
+# - сохранение связки chat_id → lead_id в Redis
 
-import os, aiohttp, asyncio, logging, json, hashlib, hmac, binascii
+import os, aiohttp, asyncio, logging
 from dotenv import load_dotenv
 from pathlib import Path
+from storage import set_lead_id, get_lead_id  # 🔴 связь chat_id → lead_id
 from typing import Optional
-from constants import AMO_REQUEST_TIMEOUT_SEC
-from storage import set_lead_id, get_lead_id  # связь chat_id → lead_id
-import datetime
+from constants import AMO_REQUEST_TIMEOUT_SEC  # 🔴 таймаут для amoCRM API
+import hashlib  # для Content-MD5  # noqa: E402
+import hmac     # для HMAC-SHA1 подписи  # noqa: E402
+import base64   # иногда удобно, но тут не используем  # noqa: E402
+import datetime # для заголовка Date  # noqa: E402
+import json     # сериализация тела запроса  # noqa: E402
+import binascii  # 🔴 для hex→bytes
 
-ENV_PATH = "/var/www/medbot/.env"
+
+
+# =============================
+#        НАСТРОЙКА ОКРУЖЕНИЯ
+# =============================
+
+ENV_PATH = "/var/www/medbot/.env"  # абсолютный путь к .env на сервере
 if os.path.exists(ENV_PATH):
     load_dotenv(ENV_PATH)
 
@@ -22,181 +38,179 @@ AMO_PIPELINE_ID = os.getenv("AMO_PIPELINE_ID", "0")
 
 
 # =======================================
-#      🔐 Менеджер OAuth-токена
+#     🔁  ОБНОВЛЕНИЕ ACCESS TOKEN
 # =======================================
 
-class TokenManager:
-    """Высокоуровневый менеджер токенов с auto-refresh и записью в .env."""
-    _lock = asyncio.Lock()  # 🔴 защита от одновременного рефреша
+async def refresh_access_token() -> str:
+    """🔁 Обновляет токен amoCRM через refresh_token и сохраняет в .env."""
+    url = f"{AMO_API_URL}/oauth2/access_token"
+    payload = {
+        "client_id": AMO_CLIENT_ID,
+        "client_secret": AMO_CLIENT_SECRET,
+        "grant_type": "refresh_token",
+        "refresh_token": AMO_REFRESH_TOKEN,
+        "redirect_uri": AMO_REDIRECT_URI,
+    }
 
-    @staticmethod
-    def _read_env() -> dict:
-        """Считывает актуальные значения из .env (файл — источник истины)."""
-        env = {}
-        with open(ENV_PATH, "r", encoding="utf-8") as f:
-            for line in f:
-                if "=" in line:
-                    k, v = line.rstrip("\n").split("=", 1)
-                    env[k] = v
-        return env
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload, timeout=AMO_REQUEST_TIMEOUT_SEC) as resp:  # 🔴
+            if resp.status != 200:
+                text = await resp.text()
+                raise RuntimeError(f"Token refresh failed [{resp.status}]: {text}")
 
-    @staticmethod
-    def _write_env(upd: dict) -> None:
-        """Перезаписывает пары ключ=значение в .env (остальное сохраняем)."""
-        lines = []
-        seen = set()
-        with open(ENV_PATH, "r", encoding="utf-8") as f:
-            for line in f:
-                if "=" in line:
-                    k, _ = line.rstrip("\n").split("=", 1)
-                    if k in upd:
-                        lines.append(f"{k}={upd[k]}\n")
-                        seen.add(k)
-                        continue
-                lines.append(line)
-        for k, v in upd.items():
-            if k not in seen:
-                lines.append(f"{k}={v}\n")
-        with open(ENV_PATH, "w", encoding="utf-8") as f:
-            f.writelines(lines)
+            data = await resp.json()
+            new_token = data["access_token"]
+            new_refresh = data.get("refresh_token", AMO_REFRESH_TOKEN)
 
-    @classmethod
-    async def refresh(cls) -> str:
-        """🔁 Обновляет access/refresh токены и сохраняет их в .env и env."""
-        async with cls._lock:  # 🔴 только один поток делает refresh
-            env = cls._read_env()
-            url = f"{AMO_API_URL}/oauth2/access_token"
-            payload = {
-                "client_id": AMO_CLIENT_ID,
-                "client_secret": AMO_CLIENT_SECRET,
-                "grant_type": "refresh_token",
-                "refresh_token": env.get("AMO_REFRESH_TOKEN", ""),
-                "redirect_uri": AMO_REDIRECT_URI,
-            }
-            async with aiohttp.ClientSession() as s:
-                async with s.post(
-                    url, json=payload, timeout=AMO_REQUEST_TIMEOUT_SEC
-                ) as r:
-                    txt = await r.text()
-                    if r.status != 200:
-                        raise RuntimeError(
-                            f"Token refresh failed [{r.status}]: {txt}"
-                        )
-                    data = await r.json()
-            new_access = data["access_token"]
-            new_refresh = data.get("refresh_token",
-                                   env.get("AMO_REFRESH_TOKEN", ""))
-            cls._write_env({
-                "AMO_ACCESS_TOKEN": new_access,
-                "AMO_REFRESH_TOKEN": new_refresh,
-            })
-            os.environ["AMO_ACCESS_TOKEN"] = new_access
+            # 🔴 перезаписываем токены в .env
+            lines = []
+            with open(ENV_PATH, "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("AMO_ACCESS_TOKEN="):
+                        line = f"AMO_ACCESS_TOKEN={new_token}\n"
+                    elif line.startswith("AMO_REFRESH_TOKEN="):
+                        line = f"AMO_REFRESH_TOKEN={new_refresh}\n"
+                    lines.append(line)
+            with open(ENV_PATH, "w", encoding="utf-8") as f:
+                f.writelines(lines)
+
+            # обновляем переменные окружения в памяти процесса
+            os.environ["AMO_ACCESS_TOKEN"] = new_token
             os.environ["AMO_REFRESH_TOKEN"] = new_refresh
-            logging.info("✅ amoCRM token refreshed and persisted")
-            return new_access
 
-    @classmethod
-    async def bearer(cls) -> str:
-        """Возвращает актуальный токен из файла/окружения (без refresh)."""
-        token = os.getenv("AMO_ACCESS_TOKEN", "")
-        if token:
-            return token
-        env = cls._read_env()
-        token = env.get("AMO_ACCESS_TOKEN", "")
-        if token:
-            os.environ["AMO_ACCESS_TOKEN"] = token
-        return token
+            logging.info("✅ amoCRM token refreshed successfully")
+            return new_token
 
 
 # =======================================
-#   🔧 Универсальный враппер REST-запросов
+#      🔧 СОЗДАНИЕ КОНТАКТА + СДЕЛКИ
 # =======================================
 
-async def amo_request(method: str, path: str, **kw) -> aiohttp.ClientResponse:
-    """
-    Делает REST-запрос c Bearer и авто-рефрешем на 401.
-    Стратегия:
-      1) Пытаемся с текущим токеном.
-      2) Если 401 — один раз делаем refresh и повторяем.
-    """
-    assert path.startswith("/"), "path должен начинаться с '/'"
-    url = f"{AMO_API_URL}{path}"
-
-    token = await TokenManager.bearer()
-    headers = kw.pop("headers", {})
-    headers = {"Authorization": f"Bearer {token}", **headers}
-    timeout = kw.pop("timeout", AMO_REQUEST_TIMEOUT_SEC)
-
-    async with aiohttp.ClientSession() as s:
-        async with s.request(method, url, headers=headers,
-                             timeout=timeout, **kw) as r:
-            if r.status != 401:
-                return r
-            # 401: пробуем обновиться и повторить
-            logging.info("🔁 401 from amoCRM → refreshing token...")
-        await TokenManager.refresh()
-        token = await TokenManager.bearer()
-        headers["Authorization"] = f"Bearer {token}"
-        async with aiohttp.ClientSession() as s2:
-            return await s2.request(method, url, headers=headers,
-                                    timeout=timeout, **kw)
-
-
-# =======================================================
-#      🧩 CRUD по вашим сценариям(Создание слеки/заметки)
-# =======================================================
-
+# 🔁 создание сделки и контакта
 async def create_lead_in_amo(chat_id: int, username: str) -> str | None:
-    """Создаёт контакт и сделку. Повтор на 401 делает amo_request."""
-    # контакт
-    contact_payload = [{"name": username or f"Telegram {chat_id}"}]
-    r = await amo_request("POST", "/api/v4/contacts", json=contact_payload)
-    txt = await r.text()
-    logging.info("📡 Contact resp [%s]: %s", r.status, txt)
-    if r.status != 200:
-        return None
-    data = await r.json()
-    contact_id = (data.get("_embedded", {})
-                      .get("contacts", [{}])[0].get("id"))
-    if not contact_id:
+    """Создаёт сделку и контакт в amoCRM, возвращает lead_id."""
+    access_token = os.getenv("AMO_ACCESS_TOKEN")
+    if not access_token:
+        logging.warning("⚠️ No AMO_ACCESS_TOKEN in env")
         return None
 
-    # сделка
-    lead_payload = [{
-        "name": f"Новый запрос из Telegram ({username})",
-        "pipeline_id": int(AMO_PIPELINE_ID),
-        "_embedded": {"contacts": [{"id": contact_id}]},
-    }]
-    r = await amo_request("POST", "/api/v4/leads", json=lead_payload)
-    txt = await r.text()
-    logging.info("📡 Lead resp [%s]: %s", r.status, txt)
-    if r.status != 200:
-        return None
-    data = await r.json()
-    lead_id = (data.get("_embedded", {})
-                   .get("leads", [{}])[0].get("id"))
-    if not lead_id:
-        return None
-    logging.info("✅ Created lead %s for chat_id=%s", lead_id, chat_id)
-    return str(lead_id)
+    try:
+        async with aiohttp.ClientSession() as s:
+            # 🔹 создаём контакт
+            contact = {"name": username or f"Telegram {chat_id}"}
+            async with s.post(
+                f"{AMO_API_URL}/api/v4/contacts",
+                headers={"Authorization": f"Bearer {access_token}"},
+                json=[contact],
+            ) as r:
+                txt = await r.text()
+                logging.info(f"📡 Contact resp [{r.status}]: {txt}")
+                if r.status != 200:
+                    if r.status == 401:
+                        logging.warning("⚠️ Token expired during contact creation — refreshing...")
+                        await refresh_access_token()
+                        return await create_lead_in_amo(chat_id, username)
+                    logging.warning(f"❌ Contact creation failed [{r.status}]: {txt}")
+                    return None
+                res = await r.json()
+                # новый формат ответа amoCRM — id внутри _embedded
+                contact_id = None
+                if isinstance(res, dict):
+                    embedded = res.get("_embedded", {})
+                    contacts = embedded.get("contacts", [])
+                    if contacts and isinstance(contacts, list):
+                        contact_id = contacts[0].get("id")
 
+                if not contact_id:
+                    logging.warning(f"⚠️ Could not parse contact_id from response: {res}")
+                    return None
 
+            # 🔹 создаём сделку
+            lead = {
+                "name": f"Новый запрос из Telegram ({username})",
+                "pipeline_id": int(AMO_PIPELINE_ID),
+                "_embedded": {"contacts": [{"id": contact_id}]},
+            }
+            async with s.post(
+                f"{AMO_API_URL}/api/v4/leads",
+                headers={"Authorization": f"Bearer {access_token}"},
+                json=[lead],
+            ) as r:
+                txt = await r.text()
+                logging.info(f"📡 Lead resp [{r.status}]: {txt}")
+                if r.status == 401:
+                    logging.warning("⚠️ Token expired during lead creation — refreshing...")
+                    await refresh_access_token()
+                    return await create_lead_in_amo(chat_id, username)
+                if r.status != 200:
+                    logging.warning(f"❌ Lead creation failed [{r.status}]: {txt}")
+                    return None
+                data = await r.json()
+                lead_id = None
+                if isinstance(data, dict):
+                    embedded = data.get("_embedded", {})
+                    leads = embedded.get("leads", [])
+                    if leads and isinstance(leads, list):
+                        lead_id = leads[0].get("id")
+
+                if not lead_id:
+                    logging.warning(f"⚠️ Could not parse lead_id from response: {data}")
+                    return None
+
+                logging.info(f"✅ Created amoCRM lead {lead_id} for chat_id={chat_id}")
+                return lead_id
+
+    except Exception as e:
+        logging.warning(f"⚠️ Exception in create_lead_in_amo: {e}")
+        import traceback
+        logging.warning(traceback.format_exc())
+        return None
+
+# amo_client.py — добавить в конец файла
 async def add_text_note(lead_id: str, text: str) -> bool:
-    """Добавляет текстовую заметку (с авто-рефрешем токена)."""
+    """
+    Добавляет текстовую заметку к сделке.
+    """
+    access_token = os.getenv("AMO_ACCESS_TOKEN")
+    if not access_token:
+        logging.warning("⚠️ No AMO_ACCESS_TOKEN in env")
+        return False
+
     payload = [{
         "entity_id": int(lead_id),
         "note_type": "common",
-        "params": {"text": text[:8000]},
+        "params": {"text": text[:8000]},  # защитимся от слишком длинного
     }]
-    r = await amo_request("POST", "/api/v4/leads/notes", json=payload)
-    txt = await r.text()
-    ok = 200 <= r.status < 300
-    logging.info("📎 add_text_note resp [%s]: %s", r.status, txt)
-    return ok
+
+    url = f"{AMO_API_URL}/api/v4/leads/notes"
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.post(
+                url,
+                headers={"Authorization": f"Bearer {access_token}"},
+                json=payload,
+            ) as r:
+                if r.status == 401:
+                    await refresh_access_token()
+                    return await add_text_note(lead_id, text)
+                txt = await r.text()
+                ok = 200 <= r.status < 300
+                logging.info(f"📎 add_text_note resp [{r.status}]: {txt}")
+                return ok
+    except Exception as e:
+        logging.warning(f"⚠️ add_text_note exception: {e}")
+        return False
 
 
 async def add_file_note(lead_id: str, uuid: str, file_name: str = "") -> bool:
-    """Прикрепляет файл (uuid) как заметку-attachment."""
+    """
+    Прикрепляет ранее загруженный файл (uuid) как заметку-attachment к сделке.
+    """
+    access_token = os.getenv("AMO_ACCESS_TOKEN")
+    if not access_token:
+        logging.warning("⚠️ No AMO_ACCESS_TOKEN in env")
+        return False
+
     payload = [{
         "entity_id": int(lead_id),
         "note_type": "attachment",
@@ -207,11 +221,25 @@ async def add_file_note(lead_id: str, uuid: str, file_name: str = "") -> bool:
             }]
         },
     }]
-    r = await amo_request("POST", "/api/v4/leads/notes", json=payload)
-    txt = await r.text()
-    ok = 200 <= r.status < 300
-    logging.info("📎 add_file_note resp [%s]: %s", r.status, txt)
-    return ok
+
+    url = f"{AMO_API_URL}/api/v4/leads/notes"
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.post(
+                url,
+                headers={"Authorization": f"Bearer {access_token}"},
+                json=payload,
+            ) as r:
+                if r.status == 401:
+                    await refresh_access_token()
+                    return await add_file_note(lead_id, uuid, file_name)
+                txt = await r.text()
+                ok = 200 <= r.status < 300
+                logging.info(f"📎 add_file_note resp [{r.status}]: {txt}")
+                return ok
+    except Exception as e:
+        logging.warning(f"⚠️ add_file_note exception: {e}")
+        return False
     
 # amo_client.py — заменить функцию целиком
 # =======================================
