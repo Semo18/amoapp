@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 .env
 .README.for.Me.md
+.gh_actions_amoapp
+.gh_actions_amoapp.pub
+.README.Me_structure.md
+.READMEmedbot.md

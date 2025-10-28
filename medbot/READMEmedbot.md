@@ -67,3 +67,30 @@ curl -s https://amo.ap-development.com/medbot/health
 
 # вебхук (разово уже сделали, но на всякий случай)
 curl -s "https://amo.ap-development.com/medbot/admin/set_webhook"
+
+# Проверка access_token через AMO_API_URL
+curl -sS -H "Authorization: Bearer $AMO_ACCESS_TOKEN" \
+  "$AMO_API_URL/api/v4/account?with=amojo_id"
+
+
+# ОБНОВЛЕНИЕ ТОКЕНА 
+
+
+set -a; source /var/www/medbot/.env; set +a
+AMO_DOMAIN=$(echo "$AMO_API_URL" | sed -E 's~^https?://~~')
+
+CODE="<сюда вставь 20-минутный код>" (СЮДА ВСТАВИТЬ ИЗ АМО КОТОРЫЙ НА 20 мину)
+
+curl -sS -X POST "https://${AMO_DOMAIN}/oauth2/access_token" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "client_id": "'"$AMO_CLIENT_ID"'",
+    "client_secret": "'"$AMO_CLIENT_SECRET"'",
+    "grant_type": "authorization_code",
+    "code": "'"$CODE"'",
+    "redirect_uri": "'"$AMO_REDIRECT_URI"'"
+  }' | jq .
+
+ВАЖНО !!! Дальше получаем 
+"access_token":
+"refresh_token":
