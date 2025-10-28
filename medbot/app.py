@@ -228,8 +228,16 @@ async def telegram_webhook(request: Request) -> Dict[str, Any]:
             # 3) Текст сообщения — как примечание
             # 3) Сообщение клиента — отправляем как chat message в amoCRM
             if text:
-                from amo_client import send_chat_message_to_amo
-                await send_chat_message_to_amo(chat_id, text, username)
+                # Импортируем актуальную функцию из amo_client
+                from amo_client import send_chat_message_v2
+
+                # Отправляем сообщение в Chat API amoCRM (scope_id берём из .env)
+                await send_chat_message_v2(
+                    scope_id=os.getenv("AMO_CHAT_SCOPE_ID", ""),
+                    chat_id=chat_id,
+                    text=text,
+                    username=username,
+                )
 
             # 4) Вложения: загрузим файл в amo + прикрепим к сделке
             if "document" in msg or "photo" in msg:

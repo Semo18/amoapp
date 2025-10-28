@@ -359,7 +359,7 @@ async def create_lead_in_amo(chat_id: int, username: str) -> Optional[int]:
         logging.warning("❌ create_lead failed")
         return None
 
-    await set_lead_id(chat_id, str(lid))
+    set_lead_id(chat_id, str(lid))
     logging.info("✅ lead %s created and cached for chat_id=%s", lid, chat_id)
     return lid
 
