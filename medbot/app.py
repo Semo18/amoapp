@@ -9,7 +9,7 @@ from typing import Optional, Dict, Any  # аннотации типов
 # каркас веб-приложения и утилиты
 from fastapi import FastAPI, Request, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware  # CORS-доступ
-from amo_client import AmoTokenManager
+from amo_client import refresh_access_token  # 🔁 автообновление токена
 from storage import get_lead_id as redis_get_lead_id, set_lead_id as redis_set_lead_id  # 🔴
 from amo_client import create_lead_in_amo  # 🔴
 # (ниже ещё импортируем add_text_note / add_file_note после того, как добавим их в amo_client)
@@ -89,32 +89,26 @@ app = FastAPI(title="medbot")  # приложение FastAPI
 # 🔴 Улучшенный автообновлятор amoCRM токена с повтором при ошибке
 @app.on_event("startup")
 async def periodic_token_refresh() -> None:
-    """
-    Автоматически проверяет и обновляет токен amoCRM каждые 12 часов,
-    с повтором через 5 минут при ошибках. Использует AmoTokenManager.
+    """Автоматически обновляет amoCRM токен каждые 12 часов,
+    с повтором через 5 минут при неудаче (например, сбой сети или 401).
     """
     import asyncio
     import logging
 
-    manager = AmoTokenManager()
-
     async def refresher():
         while True:
             try:
-                logging.info("♻️ Scheduled amoCRM token validation...")
-                ok = await manager._validate_token()
-                if not ok:
-                    await manager.refresh_tokens()
-                    logging.info("✅ amoCRM token refreshed successfully (scheduled)")
-                else:
-                    logging.info("✅ amoCRM token is valid, no refresh needed.")
-                await asyncio.sleep(AMO_TOKEN_REFRESH_INTERVAL_SEC)
+                logging.info("♻️ Scheduled amoCRM token refresh...")
+                await refresh_access_token()  # 🔴 обновление токена
+                logging.info("✅ amoCRM token refreshed successfully (scheduled)")
+                await asyncio.sleep(AMO_TOKEN_REFRESH_INTERVAL_SEC)  # 🔴 спим до следующего цикла
             except Exception as exc:
                 logging.warning(f"⚠️ Failed scheduled token refresh: {exc}")
                 logging.info("🔁 Retrying amoCRM token refresh in 5 minutes...")
-                await asyncio.sleep(AMO_TOKEN_REFRESH_RETRY_SEC)
+                await asyncio.sleep(AMO_TOKEN_REFRESH_RETRY_SEC)  # 🔴 повтор через заданный интервал
 
-    asyncio.create_task(refresher())
+    asyncio.create_task(refresher())  # 🔴 запускаем цикл в фоне
+
 
 
 # ======================

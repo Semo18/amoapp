@@ -256,3 +256,18 @@ async def _startup() -> None:
             logging.info("✅ amoCRM token is valid on startup")
     except Exception as e:
         logging.warning(f"⚠️ amoCRM startup check failed: {e}")
+
+# ---------------------------------------------------------------------
+# Совместимость со старым кодом (app.py ожидает refresh_access_token)
+# ---------------------------------------------------------------------
+
+
+async def refresh_access_token() -> str:
+    """
+    Обёртка для совместимости.
+    Вызывает AmoTokenManager.refresh_tokens() и возвращает новый access_token.
+    """
+    from amo_client import AmoTokenManager  # локальный импорт, чтобы избежать рекурсии
+    manager = AmoTokenManager()
+    await manager.refresh_tokens()
+    return manager._access_token
