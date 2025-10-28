@@ -1,349 +1,443 @@
-# amo_client.py
-# 🔴 Подсистема интеграции с amoCRM:
-# - автообновление токена по refresh_token
-# - создание контактов и сделок
-# - добавление примечаний к существующим сделкам
-# - сохранение связки chat_id → lead_id в Redis
+# -*- coding: utf-8 -*-
+"""
+Подсистема интеграции с amoCRM.
 
-import os, aiohttp, asyncio, logging
-from dotenv import load_dotenv
+Возможности:
+- Надёжная работа с OAuth2 токенами: JSON-кэш, file-lock, авто-ретрай 401.
+- Создание контактов/сделок, добавление заметок.
+- Отправка сообщений в Chat API v2 (origin/custom).
+- Поддержка .env перезаписи (access/refresh) + обновление os.environ.
+
+Стратегия токенов (вариант 2 — «ленивый рефреш»):
+- Ничего не делаем на старте.
+- Любой запрос идёт с текущим access_token.
+- Если получаем 401 — один раз делаем refresh и повторяем запрос.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64  # пригодится при расширениях
+import binascii
+import datetime as dt
+import hashlib
+import hmac
+import json
+import logging
+import os
 from pathlib import Path
-from storage import set_lead_id, get_lead_id  # 🔴 связь chat_id → lead_id
-from typing import Optional
-from constants import AMO_REQUEST_TIMEOUT_SEC  # 🔴 таймаут для amoCRM API
-import hashlib  # для Content-MD5  # noqa: E402
-import hmac     # для HMAC-SHA1 подписи  # noqa: E402
-import base64   # иногда удобно, но тут не используем  # noqa: E402
-import datetime # для заголовка Date  # noqa: E402
-import json     # сериализация тела запроса  # noqa: E402
-import binascii  # 🔴 для hex→bytes
+from typing import Any, Dict, Optional, Tuple
+
+import aiohttp
+from dotenv import load_dotenv
+
+from constants import AMO_REQUEST_TIMEOUT_SEC
+from storage import get_lead_id, set_lead_id  # связь chat_id ↔ lead_id
 
 
+# ---------------------------
+#   Загрузка окружения .env
+# ---------------------------
 
-# =============================
-#        НАСТРОЙКА ОКРУЖЕНИЯ
-# =============================
-
-ENV_PATH = "/var/www/medbot/.env"  # абсолютный путь к .env на сервере
+ENV_PATH = "/var/www/medbot/.env"
 if os.path.exists(ENV_PATH):
     load_dotenv(ENV_PATH)
 
-AMO_API_URL = os.getenv("AMO_API_URL", "")
+AMO_API_URL = os.getenv("AMO_API_URL", "").rstrip("/")
 AMO_CLIENT_ID = os.getenv("AMO_CLIENT_ID", "")
 AMO_CLIENT_SECRET = os.getenv("AMO_CLIENT_SECRET", "")
 AMO_REDIRECT_URI = os.getenv("AMO_REDIRECT_URI", "")
-AMO_REFRESH_TOKEN = os.getenv("AMO_REFRESH_TOKEN", "")
-AMO_ACCESS_TOKEN = os.getenv("AMO_ACCESS_TOKEN", "")
-AMO_PIPELINE_ID = os.getenv("AMO_PIPELINE_ID", "0")
+AMO_PIPELINE_ID = int(os.getenv("AMO_PIPELINE_ID", "0"))
+
+# Chat API (origin/custom)
+AMO_CHAT_SECRET = os.getenv("AMO_CHAT_SECRET", "")
+AMO_CHAT_SCOPE_ID = os.getenv("AMO_CHAT_SCOPE_ID", "")
+
+# ---------------------------
+#     Пути/каталоги кэша
+# ---------------------------
+
+RUNTIME_DIR = Path("/var/www/medbot/runtime")
+RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+
+TOKENS_CACHE = RUNTIME_DIR / "amo_tokens.json"
+TOKENS_LOCK = asyncio.Lock()  # process-local lock (от гонок в одном процессе)
 
 
-# =======================================
-#     🔁  ОБНОВЛЕНИЕ ACCESS TOKEN
-# =======================================
+# ======================================================================
+#                         Менеджер токенов
+# ======================================================================
 
-async def refresh_access_token() -> str:
-    """🔁 Обновляет токен amoCRM через refresh_token и сохраняет в .env."""
-    url = f"{AMO_API_URL}/oauth2/access_token"
-    payload = {
-        "client_id": AMO_CLIENT_ID,
-        "client_secret": AMO_CLIENT_SECRET,
-        "grant_type": "refresh_token",
-        "refresh_token": AMO_REFRESH_TOKEN,
-        "redirect_uri": AMO_REDIRECT_URI,
-    }
+class AmoTokenManager:
+    """
+    Менеджер токенов:
+    - хранит access/refresh в JSON-кэше (runtime),
+    - дублирует актуальные значения в .env,
+    - умеет делать refresh c file-safe перезаписью,
+    - отдаёт access_token без рефреша (лениво).
+    """
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, json=payload, timeout=AMO_REQUEST_TIMEOUT_SEC) as resp:  # 🔴
-            if resp.status != 200:
-                text = await resp.text()
-                raise RuntimeError(f"Token refresh failed [{resp.status}]: {text}")
+    def __init__(self,
+                 env_path: str = ENV_PATH,
+                 cache_path: Path = TOKENS_CACHE) -> None:
+        self._env_path = env_path
+        self._cache_path = cache_path
 
-            data = await resp.json()
-            new_token = data["access_token"]
-            new_refresh = data.get("refresh_token", AMO_REFRESH_TOKEN)
+    # --- низкоуровневые helpers -------------------------------------
 
-            # 🔴 перезаписываем токены в .env
-            lines = []
-            with open(ENV_PATH, "r", encoding="utf-8") as f:
-                for line in f:
-                    if line.startswith("AMO_ACCESS_TOKEN="):
-                        line = f"AMO_ACCESS_TOKEN={new_token}\n"
-                    elif line.startswith("AMO_REFRESH_TOKEN="):
-                        line = f"AMO_REFRESH_TOKEN={new_refresh}\n"
-                    lines.append(line)
-            with open(ENV_PATH, "w", encoding="utf-8") as f:
-                f.writelines(lines)
+    def _read_env_pairs(self) -> Dict[str, str]:
+        """Читает .env построчно в dict (без переинтерпретации)."""
+        pairs: Dict[str, str] = {}
+        if not os.path.exists(self._env_path):
+            return pairs
+        with open(self._env_path, "r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.rstrip("\n")
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                pairs[k] = v
+        return pairs
 
-            # обновляем переменные окружения в памяти процесса
-            os.environ["AMO_ACCESS_TOKEN"] = new_token
+    def _write_env_pairs(self, pairs: Dict[str, str]) -> None:
+        """Безопасно перезаписывает .env из dict (сохраняя порядок
+        известных ключей вверху, остальное ниже как было)."""
+        order = [
+            "AMO_API_URL",
+            "AMO_CLIENT_ID",
+            "AMO_CLIENT_SECRET",
+            "AMO_REDIRECT_URI",
+            "AMO_ACCESS_TOKEN",
+            "AMO_REFRESH_TOKEN",
+            "AMO_PIPELINE_ID",
+            "AMO_CHAT_SECRET",
+            "AMO_CHAT_SCOPE_ID",
+        ]
+        existing = self._read_env_pairs()
+        existing.update(pairs)
+        lines: list[str] = []
+        # Сначала — известные ключи в порядке:
+        for k in order:
+            if k in existing:
+                lines.append(f"{k}={existing[k]}\n")
+                existing.pop(k, None)
+        # Затем — все прочие, как есть:
+        for k, v in existing.items():
+            lines.append(f"{k}={v}\n")
+        tmp = self._env_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+        os.replace(tmp, self._env_path)
+
+    def _load_cache(self) -> Tuple[str, str]:
+        """Возвращает (access, refresh) из JSON-кэша либо из окружения."""
+        if self._cache_path.exists():
+            try:
+                with open(self._cache_path, "r", encoding="utf-8") as f:
+                    obj = json.load(f)
+                return obj.get("access_token", ""), obj.get("refresh_token", "")
+            except Exception:
+                logging.warning("⚠️ tokens cache read failed, ignore")
+
+        return os.getenv("AMO_ACCESS_TOKEN", ""), os.getenv(
+            "AMO_REFRESH_TOKEN", ""
+        )
+
+    def _save_cache(self, access: str, refresh: str) -> None:
+        """Атомарно пишет JSON-кэш с токенами."""
+        tmp = self._cache_path.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(
+                {"access_token": access, "refresh_token": refresh},
+                f,
+                ensure_ascii=False,
+            )
+        os.replace(tmp, self._cache_path)
+
+    # --- публичные методы -------------------------------------------
+
+    def get_access_pair(self) -> Tuple[str, str]:
+        """Возвращает (access, refresh) БЕЗ рефреша (лениво)."""
+        access, refresh = self._load_cache()
+        if not access:
+            access = os.getenv("AMO_ACCESS_TOKEN", "")
+        if not refresh:
+            refresh = os.getenv("AMO_REFRESH_TOKEN", "")
+        return access, refresh
+
+    async def refresh_tokens(self) -> str:
+        """
+        Делает refresh_token → access/refresh.
+        Атомарно обновляет: JSON-кэш, .env, os.environ.
+        Возвращает новый access_token.
+        """
+        async with TOKENS_LOCK:
+            _, refresh = self.get_access_pair()
+            if not refresh:
+                raise RuntimeError("No AMO_REFRESH_TOKEN to refresh")
+
+            url = f"{AMO_API_URL}/oauth2/access_token"
+            payload = {
+                "client_id": AMO_CLIENT_ID,
+                "client_secret": AMO_CLIENT_SECRET,
+                "grant_type": "refresh_token",
+                "refresh_token": refresh,
+                "redirect_uri": AMO_REDIRECT_URI,
+            }
+
+            async with aiohttp.ClientSession() as s:
+                async with s.post(
+                    url,
+                    json=payload,
+                    timeout=AMO_REQUEST_TIMEOUT_SEC,
+                ) as r:
+                    body = await r.text()
+                    if r.status != 200:
+                        raise RuntimeError(
+                            f"Token refresh failed [{r.status}]: {body}"
+                        )
+                    data = await r.json()
+
+            new_access = data["access_token"]
+            new_refresh = data.get("refresh_token", refresh)
+
+            # JSON-кэш
+            self._save_cache(new_access, new_refresh)
+            # .env
+            self._write_env_pairs(
+                {
+                    "AMO_ACCESS_TOKEN": new_access,
+                    "AMO_REFRESH_TOKEN": new_refresh,
+                }
+            )
+            # окружение процесса
+            os.environ["AMO_ACCESS_TOKEN"] = new_access
             os.environ["AMO_REFRESH_TOKEN"] = new_refresh
 
-            logging.info("✅ amoCRM token refreshed successfully")
-            return new_token
+            logging.info("✅ amoCRM token refreshed")
+            return new_access
 
 
-# =======================================
-#      🔧 СОЗДАНИЕ КОНТАКТА + СДЕЛКИ
-# =======================================
+# singleton менеджер
+TOKEN_MANAGER = AmoTokenManager()
 
-# 🔁 создание сделки и контакта
-async def create_lead_in_amo(chat_id: int, username: str) -> str | None:
-    """Создаёт сделку и контакт в amoCRM, возвращает lead_id."""
-    access_token = os.getenv("AMO_ACCESS_TOKEN")
-    if not access_token:
-        logging.warning("⚠️ No AMO_ACCESS_TOKEN in env")
-        return None
 
-    try:
-        async with aiohttp.ClientSession() as s:
-            # 🔹 создаём контакт
-            contact = {"name": username or f"Telegram {chat_id}"}
-            async with s.post(
-                f"{AMO_API_URL}/api/v4/contacts",
-                headers={"Authorization": f"Bearer {access_token}"},
-                json=[contact],
-            ) as r:
-                txt = await r.text()
-                logging.info(f"📡 Contact resp [{r.status}]: {txt}")
-                if r.status != 200:
-                    if r.status == 401:
-                        logging.warning("⚠️ Token expired during contact creation — refreshing...")
-                        await refresh_access_token()
-                        return await create_lead_in_amo(chat_id, username)
-                    logging.warning(f"❌ Contact creation failed [{r.status}]: {txt}")
-                    return None
-                res = await r.json()
-                # новый формат ответа amoCRM — id внутри _embedded
-                contact_id = None
-                if isinstance(res, dict):
-                    embedded = res.get("_embedded", {})
-                    contacts = embedded.get("contacts", [])
-                    if contacts and isinstance(contacts, list):
-                        contact_id = contacts[0].get("id")
+# ======================================================================
+#                    Универсальный вызов amoCRM API
+# ======================================================================
 
-                if not contact_id:
-                    logging.warning(f"⚠️ Could not parse contact_id from response: {res}")
-                    return None
-
-            # 🔹 создаём сделку
-            lead = {
-                "name": f"Новый запрос из Telegram ({username})",
-                "pipeline_id": int(AMO_PIPELINE_ID),
-                "_embedded": {"contacts": [{"id": contact_id}]},
-            }
-            async with s.post(
-                f"{AMO_API_URL}/api/v4/leads",
-                headers={"Authorization": f"Bearer {access_token}"},
-                json=[lead],
-            ) as r:
-                txt = await r.text()
-                logging.info(f"📡 Lead resp [{r.status}]: {txt}")
-                if r.status == 401:
-                    logging.warning("⚠️ Token expired during lead creation — refreshing...")
-                    await refresh_access_token()
-                    return await create_lead_in_amo(chat_id, username)
-                if r.status != 200:
-                    logging.warning(f"❌ Lead creation failed [{r.status}]: {txt}")
-                    return None
-                data = await r.json()
-                lead_id = None
-                if isinstance(data, dict):
-                    embedded = data.get("_embedded", {})
-                    leads = embedded.get("leads", [])
-                    if leads and isinstance(leads, list):
-                        lead_id = leads[0].get("id")
-
-                if not lead_id:
-                    logging.warning(f"⚠️ Could not parse lead_id from response: {data}")
-                    return None
-
-                logging.info(f"✅ Created amoCRM lead {lead_id} for chat_id={chat_id}")
-                return lead_id
-
-    except Exception as e:
-        logging.warning(f"⚠️ Exception in create_lead_in_amo: {e}")
-        import traceback
-        logging.warning(traceback.format_exc())
-        return None
-
-# amo_client.py — добавить в конец файла
-async def add_text_note(lead_id: str, text: str) -> bool:
+async def amo_request(method: str,
+                      path: str,
+                      *,
+                      params: Optional[Dict[str, Any]] = None,
+                      json_body: Optional[Any] = None,
+                      data: Optional[Any] = None) -> aiohttp.ClientResponse:
     """
-    Добавляет текстовую заметку к сделке.
-    """
-    access_token = os.getenv("AMO_ACCESS_TOKEN")
-    if not access_token:
-        logging.warning("⚠️ No AMO_ACCESS_TOKEN in env")
-        return False
+    Выполняет запрос к amoCRM с авто-ретраем после 401.
 
+    Стратегия:
+    - Берём текущий access_token (без рефреша).
+    - Если ответ 401 — один раз refresh + повтор запроса.
+    """
+    if not path.startswith("/"):
+        path = "/" + path
+    url = f"{AMO_API_URL}{path}"
+
+    access, _ = TOKEN_MANAGER.get_access_pair()
+    headers = {"Authorization": f"Bearer {access}"}
+
+    async with aiohttp.ClientSession() as s:
+        resp = await s.request(
+            method.upper(),
+            url,
+            params=params,
+            json=json_body,
+            data=data,
+            headers=headers,
+            timeout=AMO_REQUEST_TIMEOUT_SEC,
+        )
+        if resp.status != 401:
+            return resp
+
+        # 401 — пробуем разовую попытку обновиться и повторить
+        await resp.read()  # освободим соединение
+        logging.warning("🔁 401 from amoCRM — refreshing tokens and retry ...")
+        await TOKEN_MANAGER.refresh_tokens()
+
+        access2, _ = TOKEN_MANAGER.get_access_pair()
+        headers["Authorization"] = f"Bearer {access2}"
+        return await s.request(
+            method.upper(),
+            url,
+            params=params,
+            json=json_body,
+            data=data,
+            headers=headers,
+            timeout=AMO_REQUEST_TIMEOUT_SEC,
+        )
+
+
+# ======================================================================
+#                Создание контакта / сделки и заметок
+# ======================================================================
+
+async def create_contact(name: str) -> Optional[int]:
+    """Создаёт контакт, возвращает id или None."""
+    payload = [{"name": name}]
+    resp = await amo_request("POST", "/api/v4/contacts", json_body=payload)
+    txt = await resp.text()
+    logging.info("📡 create_contact [%s]: %s", resp.status, txt)
+    if resp.status != 200:
+        return None
+    data = await resp.json()
+    emb = data.get("_embedded", {})
+    items = emb.get("contacts", [])
+    return items[0]["id"] if items else None
+
+
+async def create_lead(contact_id: int,
+                      title: str,
+                      pipeline_id: int) -> Optional[int]:
+    """Создаёт сделку, привязывает контакт, возвращает id или None."""
+    payload = [{
+        "name": title,
+        "pipeline_id": int(pipeline_id),
+        "_embedded": {"contacts": [{"id": int(contact_id)}]},
+    }]
+    resp = await amo_request("POST", "/api/v4/leads", json_body=payload)
+    txt = await resp.text()
+    logging.info("📡 create_lead [%s]: %s", resp.status, txt)
+    if resp.status != 200:
+        return None
+    data = await resp.json()
+    emb = data.get("_embedded", {})
+    items = emb.get("leads", [])
+    return items[0]["id"] if items else None
+
+
+async def add_text_note(lead_id: int, text: str) -> bool:
+    """Добавляет текстовую заметку к сделке."""
     payload = [{
         "entity_id": int(lead_id),
         "note_type": "common",
-        "params": {"text": text[:8000]},  # защитимся от слишком длинного
+        "params": {"text": text[:8000]},
     }]
-
-    url = f"{AMO_API_URL}/api/v4/leads/notes"
-    try:
-        async with aiohttp.ClientSession() as s:
-            async with s.post(
-                url,
-                headers={"Authorization": f"Bearer {access_token}"},
-                json=payload,
-            ) as r:
-                if r.status == 401:
-                    await refresh_access_token()
-                    return await add_text_note(lead_id, text)
-                txt = await r.text()
-                ok = 200 <= r.status < 300
-                logging.info(f"📎 add_text_note resp [{r.status}]: {txt}")
-                return ok
-    except Exception as e:
-        logging.warning(f"⚠️ add_text_note exception: {e}")
-        return False
+    resp = await amo_request("POST", "/api/v4/leads/notes", json_body=payload)
+    txt = await resp.text()
+    logging.info("📎 add_text_note [%s]: %s", resp.status, txt)
+    return 200 <= resp.status < 300
 
 
-async def add_file_note(lead_id: str, uuid: str, file_name: str = "") -> bool:
-    """
-    Прикрепляет ранее загруженный файл (uuid) как заметку-attachment к сделке.
-    """
-    access_token = os.getenv("AMO_ACCESS_TOKEN")
-    if not access_token:
-        logging.warning("⚠️ No AMO_ACCESS_TOKEN in env")
-        return False
-
+async def add_file_note(lead_id: int,
+                        uuid: str,
+                        file_name: str = "file.bin") -> bool:
+    """Прикрепляет загруженный файл как заметку-attachment."""
     payload = [{
         "entity_id": int(lead_id),
         "note_type": "attachment",
-        "params": {
-            "attachments": [{
-                "file_name": file_name or "file.bin",
-                "uuid": uuid,
-            }]
-        },
+        "params": {"attachments": [{"file_name": file_name, "uuid": uuid}]},
     }]
+    resp = await amo_request("POST", "/api/v4/leads/notes", json_body=payload)
+    txt = await resp.text()
+    logging.info("📎 add_file_note [%s]: %s", resp.status, txt)
+    return 200 <= resp.status < 300
 
-    url = f"{AMO_API_URL}/api/v4/leads/notes"
-    try:
-        async with aiohttp.ClientSession() as s:
-            async with s.post(
-                url,
-                headers={"Authorization": f"Bearer {access_token}"},
-                json=payload,
-            ) as r:
-                if r.status == 401:
-                    await refresh_access_token()
-                    return await add_file_note(lead_id, uuid, file_name)
-                txt = await r.text()
-                ok = 200 <= r.status < 300
-                logging.info(f"📎 add_file_note resp [{r.status}]: {txt}")
-                return ok
-    except Exception as e:
-        logging.warning(f"⚠️ add_file_note exception: {e}")
-        return False
-    
-# amo_client.py — заменить функцию целиком
-# =======================================
-#      🧩 amoCRM Chat API (origin/custom)
-# =======================================
 
-# --- helpers (оставьте рядом с остальными) -------------------------------
+async def create_lead_in_amo(chat_id: int, username: str) -> Optional[int]:
+    """
+    Высокоуровнево: создаёт контакт и сделку, кэширует lead_id в Redis.
+    """
+    name = username or f"Telegram {chat_id}"
+    cid = await create_contact(name)
+    if not cid:
+        logging.warning("❌ create_contact failed")
+        return None
 
+    title = f"Новый запрос из Telegram ({name})"
+    lid = await create_lead(cid, title, AMO_PIPELINE_ID)
+    if not lid:
+        logging.warning("❌ create_lead failed")
+        return None
+
+    await set_lead_id(chat_id, str(lid))
+    logging.info("✅ lead %s created and cached for chat_id=%s", lid, chat_id)
+    return lid
+
+
+# ======================================================================
+#                      Chat API v2 (origin/custom)
+# ======================================================================
 
 def _md5_hex_lower(data: bytes) -> str:
-    """
-    Считает MD5 от байтов и возвращает hex в нижнем регистре.
-    Используем hex, т.к. именно так сервер валидирует подпись в нашем
-    аккаунте (при base64 подпись принималась, но менялась ошибка).
-    """
+    """MD5(bytes) → hex lower."""
     return hashlib.md5(data).hexdigest().lower()
 
 
 def _rfc1123_now_gmt() -> str:
-    """
-    Возвращает дату в формате RFC1123 (с 'GMT'), как требует amojo.
-    """
+    """Дата в RFC1123 ('GMT'), как требует amojo."""
     from email.utils import formatdate
     return formatdate(usegmt=True)
 
 
 def _hmac_sha1_hex_ascii(src: str, secret_ascii: str) -> str:
     """
-    HMAC-SHA1(src, key) в hex lower.
+    HMAC-SHA1(src, key) → hex lower.
 
-    Стратегия:
-    - Ключ трактуем как ASCII-строку.
-      Это важно: в нашем канале секрет принимается как ASCII, а не как
-      hex-строка, иначе сервер возвращает ORIGIN_INVALID_SIGNATURE (403).
+    Ключ трактуем как ASCII-строку (наш канал ожидает именно так).
     """
-    key = secret_ascii.encode("utf-8")  # 🔴 ключ как ascii-строка
+    key = secret_ascii.encode("utf-8")
     mac = hmac.new(key, src.encode("utf-8"), hashlib.sha1)
     return mac.hexdigest().lower()
 
 
-async def send_chat_message_v2(
-    scope_id: str,
-    chat_id: int,
-    text: str,
-    username: Optional[str] = None,
-) -> bool:
+async def send_chat_message_v2(scope_id: str,
+                               chat_id: int,
+                               text: str,
+                               username: Optional[str] = None) -> bool:
     """
-    Отправка 'new_message' в Chat API (amojo) для подключённого scope.
+    Отправляет событие 'new_message' в Chat API.
 
-    Общая стратегия:
-    1) Поля 'conversation_id' и 'user' кладём на верхний уровень.
-       В 'payload' передаём только 'message'. Так требует валидатор.
-    2) Content-MD5 считаем как hex от тела (без финального '\n').
-    3) Собираем строку подписи (METHOD, MD5-hex, Content-Type, Date, path).
-    4) Подписываем HMAC-SHA1 c ASCII-секретом канала.
-    5) POST на https://amojo.amocrm.ru/v2/origin/custom/{scope_id}/chats.
+    Требования валидатора:
+    - conversation_id и user — на верхнем уровне объекта;
+    - payload содержит message{type,text};
+    - подпись: METHOD, MD5(hex), Content-Type, Date, PATH.
     """
-
-    secret = os.getenv("AMO_CHAT_SECRET", "")
+    secret = AMO_CHAT_SECRET
     if not secret:
-        logging.warning("⚠️ Chat v2: no AMO_CHAT_SECRET in env")
+        logging.warning("⚠️ Chat v2: AMO_CHAT_SECRET empty")
         return False
     if not scope_id:
-        logging.warning("⚠️ Chat v2: empty scope_id")
+        logging.warning("⚠️ Chat v2: scope_id empty")
         return False
 
-    # --- формируем минимально валидное событие (см. 1) выше) ---
     body = {
         "event_type": "new_message",
-        # эти два поля — на верхнем уровне, не внутри payload  # 🔴
-        "conversation_id": f"tg_{chat_id}",                   # 🔴
-        "user": {                                              # 🔴
+        "conversation_id": f"tg_{chat_id}",
+        "user": {
             "id": str(chat_id),
             "name": username or f"User {chat_id}",
         },
-        # собственно полезные данные события хранятся в payload
         "payload": {
-            "message": {
-                "type": "text",
-                "text": (text or "")[:4000],
-            }
+            "message": {"type": "text", "text": (text or "")[:4000]}
         },
     }
+    body_bytes = json.dumps(
+        body, ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
 
-    # сериализуем без лишних пробелов и переводов строки
-    body_bytes = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode(
-        "utf-8"
-    )
+    content_md5 = _md5_hex_lower(body_bytes)   # hex (важно)
     content_type = "application/json"
-    content_md5 = _md5_hex_lower(body_bytes)  # hex-формат MD5  # 🔴
     date_gmt = _rfc1123_now_gmt()
     path = f"/v2/origin/custom/{scope_id}/chats"
 
-    # строка подписи — порядок и регистр строго фиксированы
     sign_src = "\n".join(
         ["POST", content_md5, content_type, date_gmt, path]
     )
-    signature = _hmac_sha1_hex_ascii(sign_src, secret)  # 🔴 ASCII-ключ
+    signature = _hmac_sha1_hex_ascii(sign_src, secret)
 
     url = f"https://amojo.amocrm.ru{path}"
     try:
-        # Логируем полезную нагрузку для отладки схемы (без секрета)
         logging.info("💬 ChatAPI v2 payload(top): %s", body)
-
         async with aiohttp.ClientSession() as s:
             async with s.post(
                 url,
