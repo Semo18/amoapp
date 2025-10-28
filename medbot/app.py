@@ -27,7 +27,6 @@ import aiohttp
 # клиент OpenAI для самопроверки соединения
 from openai import OpenAI
 
-
 # локальные модули проекта
 from bot import setup_handlers  # регистрация Telegram-хэндлеров
 from admin_api import router as admin_router  # REST для админки
@@ -46,14 +45,6 @@ import datetime
 from fastapi import Request, HTTPException
 from aiogram import Bot
 
-# app.py (на старте)  # 🔴
-from amo_client import TokenManager  # 🔴
-
-
-@app.on_event("startup")
-async def _startup():
-    # Тихо прочитаем токен (без refresh), чтобы не было сюрпризов.
-    _ = await TokenManager.bearer()  # 🔴
 
 # ======================
 #     НАСТРОЙКА БАЗЫ
