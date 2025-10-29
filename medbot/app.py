@@ -199,62 +199,61 @@ async def telegram_webhook(request: Request) -> Dict[str, Any]:
         except Exception as e:
             logging.warning(f"⚠️ Failed to forward Telegram update: {e}")
 
-    # app.py — замена блока создания сделки
-
-    # ...
-    # (2) Создание сделки / добавление заметки
-    if AMO_API_URL and AMO_ACCESS_TOKEN:
+    # (2) Создание сделки / отправка в Chat API amoCRM
+    if AMO_API_URL and os.getenv("AMO_ACCESS_TOKEN"):
         try:
             msg = data.get("message") or {}
             chat_id = msg.get("chat", {}).get("id")
-            text = msg.get("text", "")
-            username = msg.get("from", {}).get("username", "unknown")
+            text = (msg.get("text") or "").strip()
+            username = (msg.get("from", {}) or {}).get("username") or "unknown"
 
-            if not chat_id:  # страховка от нестандартных апдейтов
+            # Страховка от нестандартных апдейтов
+            if not chat_id:
+                logging.info("ℹ️ telegram_webhook: no chat_id in update; skip amo flow")
                 return {"ok": True}
 
-            # 1) Пытаемся использовать уже созданную сделку
+            # 1) Пробуем взять существующую связку chat_id → lead_id
             lead_id = redis_get_lead_id(chat_id)
 
-            # 2) Если нет — создаём новую сделку через корректный клиент
+            # 2) Если связки нет — создаём контакт+сделку в amoCRM
             if not lead_id:
+                from amo_client import create_lead_in_amo  # локальный импорт, чтобы избежать циклов
                 lead_id = await create_lead_in_amo(
                     chat_id=chat_id,
                     username=username,
                 )
                 if lead_id:
+                    # set_lead_id у тебя синхронный → без await
                     redis_set_lead_id(chat_id, str(lead_id))
+                    logging.info("✅ lead %s created & cached for chat_id=%s",
+                                 lead_id, chat_id)
+                else:
+                    logging.warning("⚠️ lead was not created for chat_id=%s", chat_id)
 
-            if not lead_id:
-                logging.warning("⚠️ Lead is not created — skip notes")
-                return {"ok": True}
-
-            # 3) Привяжем разговор tg_<chat_id> к этой сделке (идемпотентно)
-            from amo_client import link_chat_to_lead, send_chat_message_v2
-            scope_id = os.getenv("AMO_CHAT_SCOPE_ID", "")
-            conv_id = f"tg_{chat_id}"
-            try:
-                await link_chat_to_lead(
-                    scope_id=scope_id,
-                    conversation_id=conv_id,
-                    lead_id=int(lead_id),
-                )
-            except Exception as e:
-                logging.warning("⚠️ link_chat_to_lead failed: %s", e)
-
-            # 4) Сообщение клиента — отправляем как chat message в amoCRM
+            # 3) Отправляем исходное клиентское сообщение в Chat API,
+            #    чтобы оно появилось в iMbox. Для этого lead не обязателен,
+            #    но полезно иметь его уже созданным выше.
             if text:
-                await send_chat_message_v2(
-                    scope_id=scope_id,
-                    chat_id=chat_id,
-                    text=text,
-                    username=username,
-                )
+                from amo_client import send_chat_message_v2  # актуальная функция
+                scope_id = os.getenv("AMO_CHAT_SCOPE_ID", "").strip()
+                if not scope_id:
+                    logging.warning("⚠️ AMO_CHAT_SCOPE_ID is empty; skip Chat API send")
+                else:
+                    ok = await send_chat_message_v2(
+                        scope_id=scope_id,
+                        chat_id=chat_id,
+                        text=text,
+                        username=username,
+                    )
+                    if not ok:
+                        logging.warning("⚠️ ChatAPI send returned false for chat_id=%s",
+                                        chat_id)
 
             # 5) Вложения: загрузим файл в amo + прикрепим к сделке
-            if "document" in msg or "photo" in msg:
-                file_name = None
+            if lead_id and ("document" in msg or "photo" in msg):
                 file_id = None
+                file_name = ""
+
                 if "document" in msg:
                     file_id = msg["document"]["file_id"]
                     file_name = msg["document"].get("file_name", "file.bin")
@@ -263,16 +262,36 @@ async def telegram_webhook(request: Request) -> Dict[str, Any]:
                     file_name = "photo.jpg"
 
                 if file_id:
-                    file_info = await bot.get_file(file_id)
-                    file_bytes = await bot.download_file(file_info.file_path)
-                    uuid = await upload_file_to_amo(file_name, file_bytes.read())
-                    if uuid:
-                        from amo_client import add_file_note
-                        await add_file_note(
-                            lead_id=str(lead_id),
-                            uuid=uuid,
-                            file_name=file_name,
+                    try:
+                        file_info = await bot.get_file(file_id)
+                        file_bytes = await bot.download_file(
+                            file_info.file_path
                         )
+                        uuid = await upload_file_to_amo(
+                            file_name, file_bytes.read()
+                        )
+                        if uuid:
+                            from amo_client import add_file_note
+
+                            ok = await add_file_note(
+                                lead_id=str(lead_id),
+                                uuid=uuid,
+                                file_name=file_name or "file.bin",
+                            )
+                            if not ok:
+                                logging.warning(
+                                    "⚠️ add_file_note failed for lead=%s",
+                                    lead_id,
+                                )
+                        else:
+                            logging.warning(
+                                "⚠️ upload_file_to_amo returned empty uuid"
+                            )
+                    except Exception as ex:
+                        logging.warning(
+                            "⚠️ file attach flow failed: %s", ex
+                        )
+
 
 
 # ======================
