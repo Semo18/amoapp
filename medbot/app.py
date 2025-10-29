@@ -1,339 +1,361 @@
-# app.py
-# Основной файл FastAPI-приложения (medbot)
-# Обрабатывает Telegram webhooks, интеграцию с amoCRM и OpenAI.
+# app.py — FastAPI-приложение бота: Telegram ↔ amoCRM ↔ OpenAI
+# Каждая строка снабжена коротким комментарием; новые правки — # 🔴
 
-import os  # работа с переменными окружения и .env
-import logging  # логирование системных событий
-from typing import Optional, Dict, Any  # аннотации типов
+import os  # доступ к переменным окружения
+import logging  # базовое логирование
+from typing import Optional, Dict, Any  # типизация
 
-# каркас веб-приложения и утилиты
-from fastapi import FastAPI, Request, HTTPException, Query
-from fastapi.middleware.cors import CORSMiddleware  # CORS-доступ
-from amo_client import AmoTokenManager  # ✅ новый менеджер токенов
-from storage import get_lead_id as redis_get_lead_id, set_lead_id as redis_set_lead_id  # 🔴
-from amo_client import create_lead_in_amo  # 🔴
-# (ниже ещё импортируем add_text_note / add_file_note после того, как добавим их в amo_client)
+from fastapi import FastAPI, Request, HTTPException, Query  # веб-ядро
+from fastapi.middleware.cors import CORSMiddleware  # CORS-политика
 
-# Telegram SDK (aiogram)
-from aiogram import Bot, Dispatcher
-from aiogram.types import Update
+from dotenv import load_dotenv  # загрузка .env
 
-# загрузка переменных окружения
-from dotenv import load_dotenv
+from aiogram import Bot, Dispatcher  # Telegram SDK
+from aiogram.types import Update  # модель апдейта
 
-# используется для HTTP-запросов в amoCRM
-import aiohttp
+from openai import OpenAI  # самотест OpenAI
 
-# клиент OpenAI для самопроверки соединения
-from openai import OpenAI
-
-# локальные модули проекта
-from bot import setup_handlers  # регистрация Telegram-хэндлеров
-from admin_api import router as admin_router  # REST для админки
-from repo import fetch_messages  # получение сообщений из БД
-from repo import upload_file_to_amo  # 🔴 загрузка файлов в amoCRM
-from constants import (  # 🔴 общие константы
+# локальные модули (структура проекта сохранена)
+from bot import setup_handlers  # регистрация хэндлеров
+from admin_api import router as admin_router  # маршруты админки
+from repo import fetch_messages, upload_file_to_amo  # БД и файлы в amo
+from constants import (  # общие константы проекта
     ALLOWED_ORIGINS,
     TELEGRAM_FORWARD_TIMEOUT_SEC,
     AMO_TOKEN_REFRESH_INTERVAL_SEC,
     AMO_TOKEN_REFRESH_RETRY_SEC,
 )
 
-import hashlib
-import hmac
-import datetime
-from fastapi import Request, HTTPException
-from aiogram import Bot
-
+# 🔴 — функции работы с amoCRM оставляем в отдельном модуле
+from amo_client import (  # 🔴
+    refresh_access_token,        # 🔁 обновление токена amoCRM
+    create_lead_in_amo,          # создание контакта+сделки
+    add_file_note,               # прикрепление файла к сделке
+    send_chat_message_v2,        # отправка в Chat API (amojo)
+)
 
 # ======================
-#     НАСТРОЙКА БАЗЫ
+#      Инициализация
 # ======================
 
-load_dotenv()  # подгружаем .env
+load_dotenv()  # загружаем .env до чтения переменных
 
-logging.basicConfig(  # глобальное логирование
+logging.basicConfig(  # настройка логгера
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 
-# --- системные переменные ---
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")  # токен Telegram-бота
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")  # токен Telegram
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "secret")  # секрет вебхука
 BASE_URL = os.getenv("BASE_URL", "").rstrip("/")  # базовый URL
 
-# --- параметры OpenAI ---
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-ASSISTANT_ID = os.getenv("ASSISTANT_ID")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # ключ OpenAI
+ASSISTANT_ID = os.getenv("ASSISTANT_ID")  # ID ассистента OpenAI
 
-# жёсткая валидация обязательных переменных
-if not BOT_TOKEN:
+if not BOT_TOKEN:  # валидация критичных переменных
     raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")
 if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY is not set")
 if not ASSISTANT_ID:
     raise RuntimeError("ASSISTANT_ID is not set")
 
-# --- настройки amoCRM ---
-AMO_WEBHOOK_URL = os.getenv("AMO_WEBHOOK_URL", "")
-AMO_API_URL = os.getenv("AMO_API_URL", "")
-AMO_ACCESS_TOKEN = os.getenv("AMO_ACCESS_TOKEN", "")
-AMO_ENABLED = bool(AMO_WEBHOOK_URL or AMO_API_URL)
+AMO_WEBHOOK_URL = os.getenv("AMO_WEBHOOK_URL", "")  # URL вебхука в amo
+AMO_API_URL = os.getenv("AMO_API_URL", "")  # базовый API amo
+AMO_ENABLED = bool(AMO_WEBHOOK_URL or AMO_API_URL)  # флаг интеграции
 
-# --- создаём объекты Telegram SDK ---
-bot = Bot(BOT_TOKEN)  # основной Telegram-бот
-dp = Dispatcher()  # маршрутизатор aiogram
+bot = Bot(BOT_TOKEN)  # инициализация Telegram-бота
+dp = Dispatcher()  # роутер aiogram
 app = FastAPI(title="medbot")  # приложение FastAPI
 
+# ======================
+#  Периодический refresh
+# ======================
 
-# 🔴 Улучшенный автообновлятор amoCRM токена с повтором при ошибке
-@app.on_event("startup")
+@app.on_event("startup")  # хук старта приложения
 async def periodic_token_refresh() -> None:
-    """
-    Проверяет токен amoCRM при старте и запускает фоновое обновление каждые 12 часов.
-    Использует AmoTokenManager для надёжной работы с JSON-кэшем и .env.
-    """
-    import asyncio
-    import logging
+    """Фоновое обновление токена amoCRM по расписанию."""
+    import asyncio  # локальный импорт — не засоряем глобалку
 
-    manager = AmoTokenManager()  # создаём менеджер токенов
-
-    async def refresher():
-        while True:
+    async def refresher() -> None:
+        while True:  # бесконечный цикл до остановки сервиса
             try:
-                logging.info("♻️ Scheduled amoCRM token validation...")
-                ok = await manager._validate_token() if hasattr(manager, "_validate_token") else True
-                if not ok:
-                    await manager.refresh_tokens()
-                    logging.info("✅ amoCRM token refreshed (scheduled)")
-                else:
-                    logging.info("✅ amoCRM token is valid")
-                await asyncio.sleep(AMO_TOKEN_REFRESH_INTERVAL_SEC)
-            except Exception as exc:
-                logging.warning(f"⚠️ Failed scheduled token refresh: {exc}")
-                logging.info("🔁 Retrying in 5 minutes...")
+                logging.info("♻️ Scheduled amoCRM token refresh...")
+                await refresh_access_token()  # 🔁 запрос токена
+                logging.info(
+                    "✅ amoCRM token refreshed successfully (scheduled)"
+                )
+                await asyncio.sleep(  # пауза до следующего окна
+                    AMO_TOKEN_REFRESH_INTERVAL_SEC
+                )
+            except Exception as exc:  # сетевые/401 и т.п.
+                logging.warning("⚠️ Refresh failed: %s", exc)
+                logging.info("🔁 Retry in %s sec",
+                             AMO_TOKEN_REFRESH_RETRY_SEC)
                 await asyncio.sleep(AMO_TOKEN_REFRESH_RETRY_SEC)
 
-    asyncio.create_task(refresher())  # фоновая задача без блокировки старта
-
-
+    asyncio.create_task(refresher())  # фоновая задача
+    # 🔴
 
 # ======================
-#     НАСТРОЙКА CORS
+#         CORS
 # ======================
 
-# разрешённые источники (фронтенд и тестовые домены)
-# CORS источники берём из общего модуля констант # 🔴
-
-app.add_middleware(
+app.add_middleware(  # разрешённые источники фронтенда
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,  # список разрешённых доменов
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],  # разрешаем все HTTP-методы
-    allow_headers=["*"],  # все заголовки
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# ====================================================
-#     ПРОСТАЯ ПРОВЕРКА СВЯЗНОСТИ С OpenAI API
-# ====================================================
+# ======================
+#  OpenAI self-test API
+# ======================
 
 @app.get("/medbot/openai-selftest")
 async def openai_selftest() -> Dict[str, Any]:
-    """
-    Проверка связности с OpenAI:
-    1. Проверяем доступ к модели.
-    2. Проверяем доступ к конкретному ассистенту.
-    """
+    """Проверка доступности моделей и ассистента."""
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
+        client = OpenAI(api_key=OPENAI_API_KEY)  # клиент SDK
         mdl = client.models.retrieve("gpt-4o-mini")  # тест модели
-        ast = client.beta.assistants.retrieve(ASSISTANT_ID)  # тест ассистента
-        return {
-            "ok": True,
-            "model": mdl.id,
-            "assistant_id": ast.id,
-            "assistant_name": getattr(ast, "name", None),
-        }
+        ast = client.beta.assistants.retrieve(ASSISTANT_ID)  # ассистент
+        return {"ok": True, "model": mdl.id, "assistant_id": ast.id,
+                "assistant_name": getattr(ast, "name", None)}
     except Exception as exc:
-        logging.exception("OpenAI selftest failed")
+        logging.exception("OpenAI selftest failed")  # стек в логи
         raise HTTPException(status_code=500, detail=str(exc))
 
-# ==========================================================
-#       ГЛАВНЫЙ TELEGRAM WEBHOOK
-# ==========================================================
+# ======================
+#      Telegram webhook
+# ======================
+
+from storage import (  # импортируем после настройки app
+    get_lead_id as redis_get_lead_id,  # маппинг chat_id → lead_id
+    set_lead_id as redis_set_lead_id,
+)
 
 @app.post("/medbot/webhook")
 async def telegram_webhook(request: Request) -> Dict[str, Any]:
-    """
-    Основная точка приёма Telegram-сообщений.
-    Стратегия:
-    1. Обрабатываем сообщение aiogram.
-    2. Дублируем апдейт в amoCRM.
-    3. Создаём сделку и прикладываем файлы.
-    """
-    # Проверяем секретный токен вебхука (чтобы не принимать чужие запросы) # 🔴
-    secret = request.headers.get(
-        "x-telegram-bot-api-secret-token"
-    )  # 🔴
-    if secret != WEBHOOK_SECRET:  # 🔴
+    """Основная точка входа Telegram-апдейтов."""
+    # защитный секрет, чтобы не принять чужой вызов
+    secret = request.headers.get("x-telegram-bot-api-secret-token")
+    if secret != WEBHOOK_SECRET:
         raise HTTPException(status_code=403, detail="bad secret")
 
-    # читаем JSON тела запроса (Telegram update)
-    data = await request.json()
+    data = await request.json()  # читаем update как dict
+    update = Update.model_validate(data)  # валидация aiogram-моделью
+    await dp.feed_update(bot, update)  # отдаём хэндлерам aiogram
 
-    # парсим в объект Update для aiogram
-    update = Update.model_validate(data)
-    await dp.feed_update(bot, update)  # передаём на обработку aiogram
-
-    # (1) Дублирование апдейта в amoCRM webhook
+    # зеркалим апдейт в amoCRM при наличии URL
     if AMO_WEBHOOK_URL:
         try:
-            async with aiohttp.ClientSession() as session:
-                await session.post(
-                    AMO_WEBHOOK_URL, 
-                    json=data, 
-                    timeout=TELEGRAM_FORWARD_TIMEOUT_SEC
-                )  # 🔴 используем константу таймаута
-                logging.info("📨 Telegram update forwarded to amoCRM webhook")
+            import aiohttp  # локальный импорт — экономим импорты
+            async with aiohttp.ClientSession() as s:  # сессия HTTP
+                await s.post(  # отправка «как есть», с таймаутом
+                    AMO_WEBHOOK_URL,
+                    json=data,
+                    timeout=TELEGRAM_FORWARD_TIMEOUT_SEC,
+                )
+                logging.info("📨 Update forwarded to amoCRM webhook")
         except Exception as e:
-            logging.warning(f"⚠️ Failed to forward Telegram update: {e}")
+            logging.warning("⚠️ Forward to amoCRM failed: %s", e)
 
-    # app.py — замена блока создания сделки
-
-    # ...
-    # (2) Создание сделки / добавление заметки
-    if AMO_API_URL and AMO_ACCESS_TOKEN:
+    # ниже — логика сделки/заметок/чата amoCRM
+    if AMO_API_URL and os.getenv("AMO_ACCESS_TOKEN"):  # включена ли amo
         try:
-            msg = data.get("message") or {}
-            chat_id = msg.get("chat", {}).get("id")
-            text = msg.get("text", "")
-            username = msg.get("from", {}).get("username", "unknown")
+            msg = data.get("message") or {}  # блок сообщения
+            chat_id_opt = (msg.get("chat") or {}).get("id")  # int|None
+            text = (msg.get("text") or "").strip()  # текст апдейта
+            username = ((msg.get("from") or {}).get("username")
+                        or "unknown")  # имя юзера
 
-            if not chat_id:  # страховка от нестандартных апдейтов
+            if chat_id_opt is None:  # защита от нестандартных апдейтов
+                logging.info("ℹ️ no chat_id in update; skip amo flow")
                 return {"ok": True}
 
-            # 1) Пытаемся использовать уже созданную сделку
+            chat_id = int(chat_id_opt)  # 🔴 подчистили Optional → int
+
+            # пробуем получить связку chat_id → lead_id из Redis
             lead_id = redis_get_lead_id(chat_id)
 
-            # 2) Если нет — создаём новую сделку через корректный клиент
+            # если связки нет — создаём сделку + контакт
             if not lead_id:
-                lead_id = await create_lead_in_amo(chat_id=chat_id, username=username)
-                if lead_id:
-                    redis_set_lead_id(chat_id, str(lead_id))
-
-            if not lead_id:
-                logging.warning("⚠️ Lead is not created — skip notes")
-                return {"ok": True}
-
-            # 3) Текст сообщения — как примечание
-            # 3) Сообщение клиента — отправляем как chat message в amoCRM
-            if text:
-                # Импортируем актуальную функцию из amo_client
-                from amo_client import send_chat_message_v2
-
-                # Отправляем сообщение в Chat API amoCRM (scope_id берём из .env)
-                await send_chat_message_v2(
-                    scope_id=os.getenv("AMO_CHAT_SCOPE_ID", ""),
-                    chat_id=chat_id,
-                    text=text,
+                lead_id = await create_lead_in_amo(  # создание лида
+                    chat_id=chat_id,               # 🔴 int гарантирован
                     username=username,
                 )
+                if lead_id:
+                    redis_set_lead_id(chat_id, str(lead_id))  # кэш
+                    logging.info("✅ lead %s created for chat %s",
+                                 lead_id, chat_id)
+                else:
+                    logging.warning("⚠️ lead not created for chat %s",
+                                    chat_id)
 
-            # 4) Вложения: загрузим файл в amo + прикрепим к сделке
-            if "document" in msg or "photo" in msg:
-                file_name = None
-                file_id = None
-                if "document" in msg:
+            # отправляем клиентский текст в Chat API (iMbox)
+            if text:
+                scope_id = os.getenv("AMO_CHAT_SCOPE_ID", "").strip()
+                if not scope_id:
+                    logging.warning("⚠️ AMO_CHAT_SCOPE_ID is empty")
+                else:
+                    ok = await send_chat_message_v2(  # amojo POST
+                        scope_id=scope_id,
+                        chat_id=chat_id,
+                        text=text,
+                        username=username,
+                    )
+                    if not ok:
+                        logging.warning("⚠️ ChatAPI send returned false")
+
+            # вложения прикладываем только если есть lead_id
+            if lead_id and ("document" in msg or "photo" in msg):
+                file_id: Optional[str] = None  # ID файла в Telegram
+                file_name = ""  # имя файла для amo
+
+                if "document" in msg:  # документ
                     file_id = msg["document"]["file_id"]
                     file_name = msg["document"].get("file_name", "file.bin")
-                elif "photo" in msg:
+                elif "photo" in msg:  # фото
                     file_id = msg["photo"][-1]["file_id"]
                     file_name = "photo.jpg"
 
                 if file_id:
-                    file_info = await bot.get_file(file_id)
-                    file_bytes = await bot.download_file(file_info.file_path)
-                    uuid = await upload_file_to_amo(file_name, file_bytes.read())  # 🔴
-                    if uuid:
-                        from amo_client import add_file_note  # 🔴 импорт после добавления функции
-                        await add_file_note(lead_id=str(lead_id), uuid=uuid, file_name=file_name)
+                    try:
+                        file_info = await bot.get_file(file_id)  # meta
+                        file_bytes = await bot.download_file(  # контент
+                            file_info.file_path
+                        )
+                        uuid = await upload_file_to_amo(  # в amo-хранилище
+                            file_name, file_bytes.read(),
+                        )
+                        if uuid:
+                            ok = await add_file_note(  # привязка к сделке
+                                lead_id=str(lead_id),
+                                uuid=uuid,
+                                file_name=file_name or "file.bin",
+                            )
+                            if not ok:
+                                logging.warning("⚠️ add_file_note failed")
+                        else:
+                            logging.warning("⚠️ upload_file_to_amo empty")
+                    except Exception as ex:
+                        logging.warning("⚠️ file attach flow failed: %s",
+                                        ex)
 
         except Exception as e:
-            logging.warning(f"⚠️ Failed to process amoCRM linkage: {e}")
+            logging.warning("⚠️ amoCRM linkage failed: %s", e)
 
-    return {"ok": True}  # Telegram ждёт подтверждение
+    return {"ok": True}  # подтверждаем Telegram
 
 # ======================
-#     HEALTHCHECK API
+#        Healthcheck
 # ======================
 
 @app.get("/medbot/health")
 async def health() -> Dict[str, str]:
-    """Проверка доступности сервера."""
+    """Проверка живости сервиса."""
     return {"status": "ok"}
 
-# =====================================================
-#   ВХОДЯЩИЕ СОБЫТИЯ ОТ AMOCRM
-# =====================================================
+# ======================
+#   Входящий Chat API
+# ======================
 
+import hashlib  # подпись входящих событий amojo
+import hmac  # HMAC-SHA1
 
-@app.post("/medbot/amo-webhook")
-async def amo_webhook(request: Request):
-    """
-    Приём событий amoCRM (новые сообщения из сделки).
-    Если сообщение is_incoming=False (от менеджера) —
-    пересылаем его в Telegram пользователю, но ассистент не отвечает.
-    """
-    data = await request.json()
-    logging.info(f"📩 Вебхук amoCRM: {data}")
+def _hmac_sha1_hex(data: str, secret: str) -> str:
+    """Подписание строки как hex(lower)."""
+    mac = hmac.new(secret.encode("utf-8"),
+                   data.encode("utf-8"),
+                   digestmod="sha1")
+    return mac.hexdigest().lower()
+
+@app.post("/medbot/amo-webhook/{scope_id}")
+async def amo_chat_webhook(scope_id: str, request: Request):
+    """Приём событий Chat API (сообщения менеджера из карточки)."""
+    secret = os.getenv("AMO_CHAT_SECRET", "")
+    if not secret:
+        raise HTTPException(status_code=500, detail="chat secret empty")
+
+    date_hdr = request.headers.get("Date", "")
+    ct_hdr = request.headers.get("Content-Type", "application/json")
+    md5_hdr = (request.headers.get("Content-MD5", "") or "").lower()
+    sig_hdr = (request.headers.get("X-Signature", "") or "").lower()
+
+    body = await request.body()  # байты тела для MD5
+
+    real_md5 = hashlib.md5(body).hexdigest().lower()  # контрольная сумма
+    if md5_hdr and md5_hdr != real_md5:  # валидация MD5 если пришёл
+        raise HTTPException(status_code=400, detail="Bad Content-MD5")
+
+    path = f"/medbot/amo-webhook/{scope_id}"  # путь для подписи
+
+    sign_str = "\n".join([  # строка подписи по схеме amojo
+        request.method.upper(),
+        md5_hdr,
+        ct_hdr,
+        date_hdr,
+        path,
+    ])
+    expected = _hmac_sha1_hex(sign_str, secret)  # расчёт подписи
+
+    if sig_hdr and sig_hdr != expected:  # несоответствие подписи
+        raise HTTPException(status_code=401, detail="Bad signature")
 
     try:
-        events = data.get("_embedded", {}).get("events", [])
-        for ev in events:
-            if ev.get("type") != "chats_message":  # интересуют только чат-сообщения
-                continue
-            msg = ev.get("payload", {}).get("message", {})
-            chat_id_str = ev.get("payload", {}).get("chat_id", "")
-            if not chat_id_str.startswith("telegram-"):
-                continue
-            chat_id = int(chat_id_str.replace("telegram-", ""))
-            text = msg.get("text", "")
-            is_incoming = msg.get("is_incoming", True)
+        payload = await request.json()  # парсим JSON
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
 
-            # от менеджера → пользователю
-            if not is_incoming and text:
-                await bot.send_message(chat_id, text)
-                logging.info(f"➡️ Отправлено пользователю из amoCRM: {text}")
+    evt = payload.get("event_type")  # тип события
+    if evt != "new_message":  # игнорируем прочие события
+        return {"status": "ignored"}
 
-    except Exception as e:
-        logging.warning(f"⚠️ Ошибка обработки amoCRM webhook: {e}")
+    # v2-формат: верхний уровень + payload.message
+    conv_id = (payload.get("conversation_id") or "").strip()  # 🔴
+    if not conv_id.startswith("tg_"):  # не наш разговор
+        return {"status": "ignored"}
 
-    return {"ok": True}
+    try:
+        chat_id = int(conv_id.replace("tg_", "", 1))  # извлекаем ID
+    except ValueError:
+        return {"status": "ignored"}  # странный conv_id
 
+    msg = (payload.get("payload") or {}).get("message") or {}  # текст
+    text = (msg.get("text") or "").strip()
+    if not text:
+        return {"status": "ok"}  # пустые не шлём
 
-# =====================================================
-#   ADMIN API, TELEGRAM ХЭНДЛЕРЫ, WEBHOOK SETUP
-# =====================================================
+    try:
+        await bot.send_message(chat_id, f"💬 Менеджер: {text}")  # ответ
+    except Exception:  # не роняем вебхук
+        pass
 
-setup_handlers(dp)  # регистрация Telegram-хэндлеров
-app.include_router(admin_router)  # подключение REST админки
+    return {"status": "ok"}
+
+# ======================
+#     Админ-хелперы
+# ======================
+
+app.include_router(admin_router)  # подключаем админ-роуты
+setup_handlers(dp)  # регистрируем Telegram-хэндлеры
 
 @app.get("/admin/set_webhook")
 async def set_webhook() -> Dict[str, Any]:
-    """Устанавливает Telegram webhook (вызвать после деплоя)."""
+    """Установка Telegram-webhook после деплоя."""
     if not BASE_URL:
         raise HTTPException(500, "BASE_URL not set")
 
-    await bot.set_webhook(
+    await bot.set_webhook(  # настраиваем вебхук бота
         url=f"{BASE_URL}/medbot/webhook",
         secret_token=WEBHOOK_SECRET,
         drop_pending_updates=True,
     )
     return {"ok": True, "url": f"{BASE_URL}/medbot/webhook"}
 
-# =====================================================
-#   API для сообщений админ-панели (поиск и фильтры)
-# =====================================================
+# ======================
+#    API для админ-панели
+# ======================
 
 @app.get("/admin-api/messages")
 async def api_messages(
@@ -346,7 +368,7 @@ async def api_messages(
     content_type: Optional[str] = Query(None),
     order: str = Query("desc", regex="^(asc|desc)$"),
 ) -> Dict[str, Any]:
-    """API админ-панели: выдача сообщений с фильтрами и пагинацией."""
+    """Выдача сообщений с фильтрами и пагинацией."""
     try:
         data = fetch_messages(
             chat_id=chat_id,
@@ -361,105 +383,3 @@ async def api_messages(
         return data
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
-
-
-def _hmac_sha1_hex(data: str, secret: str) -> str:
-    """Подпись X-Signature для Chat API."""
-    mac = hmac.new(secret.encode("utf-8"),
-                   data.encode("utf-8"),
-                   digestmod="sha1")
-    return mac.hexdigest().lower()
-
-# =====================================================
-#   ВХОДЯЩИЕ СОБЫТИЯ ОТ AMO CHAT API (amojo → к нам)
-# =====================================================
-
-@app.post("/medbot/amo-webhook/{scope_id}")
-async def amo_chat_webhook(scope_id: str, request: Request):
-    """
-    Принимаем события Chat API (amojo) от amoCRM.
-    Менеджер пишет из карточки → шлём в Telegram и НЕ включаем ассистента.
-
-    Важно:
-    • amo может прислать два слегка разных варианта схемы:
-      a) top-level:    {"event_type", "conversation_id", "payload":{"message":...}}
-      b) внутри payload: {"event_type", "payload":{"conversation_id", "message":...}}
-    • Мы поддерживаем оба.
-    """
-    # 1) Секрет для подписи
-    secret = os.getenv("AMO_CHAT_SECRET", "")
-    if not secret:
-        raise HTTPException(status_code=500, detail="Chat secret is empty")
-
-    # 2) Читаем заголовки, тело и сразу считаем MD5 по bytes (без \n)
-    date_hdr = request.headers.get("Date", "")
-    ct_hdr = request.headers.get("Content-Type", "application/json")
-    md5_hdr = (request.headers.get("Content-MD5", "") or "").lower()
-    sig_hdr = (request.headers.get("X-Signature", "") or "").lower()
-    body = await request.body()
-    real_md5 = hashlib.md5(body).hexdigest().lower()
-
-    # 3) Если amo прислало Content-MD5 — валидируем (если нет, не валим)
-    if md5_hdr and md5_hdr != real_md5:
-        raise HTTPException(status_code=400, detail="Bad Content-MD5")
-
-    # 4) Собираем строку подписи так же, как при отправке
-    path = f"/medbot/amo-webhook/{scope_id}"
-    sign_str = "\n".join([
-        request.method.upper(),
-        md5_hdr,
-        ct_hdr,
-        date_hdr,
-        path,
-    ])
-    expected = _hmac_sha1_hex(sign_str, secret)
-
-    # 5) Если подпись присутствует и не совпала — 401
-    if sig_hdr and sig_hdr != expected:
-        raise HTTPException(status_code=401, detail="Bad signature")
-
-    # 6) Парсим JSON
-    try:
-        payload = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON")
-
-    # 7) Тип события
-    evt = payload.get("event_type")
-    if evt != "new_message":
-        return {"status": "ignored"}  # только чат-сообщения интересуют
-
-    # 8) Амбидекстр: достаём conversation_id и message из top-level ИЛИ из payload
-    top_conv = (payload.get("conversation_id") or "").strip()
-    top_user  = payload.get("user") or {}  # может быть, но нам не обязателен
-
-    pl = payload.get("payload") or {}
-    pl_conv = (pl.get("conversation_id") or pl.get("conversationId") or "").strip()
-    pl_msg  = pl.get("message") or {}
-
-    # берём conv_id в приоритете: top-level → внутри payload
-    conv_id = top_conv or pl_conv
-    msg_obj = (payload.get("message") or {}) or pl_msg  # если вдруг amo пошлёт top-level message
-
-    # 9) Проверяем формат нашего канала: tg_{chat_id}
-    if not conv_id.startswith("tg_"):
-        return {"status": "ignored"}  # это не чат нашего origin/custom
-
-    try:
-        chat_id = int(conv_id.replace("tg_", "", 1))
-    except ValueError:
-        return {"status": "ignored"}
-
-    # 10) Текст сообщения менеджера
-    text = (msg_obj.get("text") or "").strip()
-    if not text:
-        return {"status": "ok"}  # нечего слать
-
-    # 11) Отправляем в Telegram (без ассистента)
-    try:
-        await bot.send_message(chat_id, f"💬 Менеджер: {text}")
-        logging.info("➡️ amo → Telegram delivered to %s: %s", chat_id, text)
-    except Exception as e:
-        logging.warning("⚠️ Failed to deliver amo→TG: %s", e)
-
-    return {"status": "ok"}
