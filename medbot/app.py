@@ -46,6 +46,7 @@ from fastapi import Request, HTTPException
 from aiogram import Bot
 
 
+
 # ======================
 #     НАСТРОЙКА БАЗЫ
 # ======================
@@ -217,7 +218,10 @@ async def telegram_webhook(request: Request) -> Dict[str, Any]:
 
             # 2) Если нет — создаём новую сделку через корректный клиент
             if not lead_id:
-                lead_id = await create_lead_in_amo(chat_id=chat_id, username=username)
+                lead_id = await create_lead_in_amo(
+                    chat_id=chat_id,
+                    username=username,
+                )
                 if lead_id:
                     redis_set_lead_id(chat_id, str(lead_id))
 
@@ -225,21 +229,29 @@ async def telegram_webhook(request: Request) -> Dict[str, Any]:
                 logging.warning("⚠️ Lead is not created — skip notes")
                 return {"ok": True}
 
-            # 3) Текст сообщения — как примечание
-            # 3) Сообщение клиента — отправляем как chat message в amoCRM
-            if text:
-                # Импортируем актуальную функцию из amo_client
-                from amo_client import send_chat_message_v2
+            # 3) Привяжем разговор tg_<chat_id> к этой сделке (идемпотентно)
+            from amo_client import link_chat_to_lead, send_chat_message_v2
+            scope_id = os.getenv("AMO_CHAT_SCOPE_ID", "")
+            conv_id = f"tg_{chat_id}"
+            try:
+                await link_chat_to_lead(
+                    scope_id=scope_id,
+                    conversation_id=conv_id,
+                    lead_id=int(lead_id),
+                )
+            except Exception as e:
+                logging.warning("⚠️ link_chat_to_lead failed: %s", e)
 
-                # Отправляем сообщение в Chat API amoCRM (scope_id берём из .env)
+            # 4) Сообщение клиента — отправляем как chat message в amoCRM
+            if text:
                 await send_chat_message_v2(
-                    scope_id=os.getenv("AMO_CHAT_SCOPE_ID", ""),
+                    scope_id=scope_id,
                     chat_id=chat_id,
                     text=text,
                     username=username,
                 )
 
-            # 4) Вложения: загрузим файл в amo + прикрепим к сделке
+            # 5) Вложения: загрузим файл в amo + прикрепим к сделке
             if "document" in msg or "photo" in msg:
                 file_name = None
                 file_id = None
@@ -253,15 +265,15 @@ async def telegram_webhook(request: Request) -> Dict[str, Any]:
                 if file_id:
                     file_info = await bot.get_file(file_id)
                     file_bytes = await bot.download_file(file_info.file_path)
-                    uuid = await upload_file_to_amo(file_name, file_bytes.read())  # 🔴
+                    uuid = await upload_file_to_amo(file_name, file_bytes.read())
                     if uuid:
-                        from amo_client import add_file_note  # 🔴 импорт после добавления функции
-                        await add_file_note(lead_id=str(lead_id), uuid=uuid, file_name=file_name)
+                        from amo_client import add_file_note
+                        await add_file_note(
+                            lead_id=str(lead_id),
+                            uuid=uuid,
+                            file_name=file_name,
+                        )
 
-        except Exception as e:
-            logging.warning(f"⚠️ Failed to process amoCRM linkage: {e}")
-
-    return {"ok": True}  # Telegram ждёт подтверждение
 
 # ======================
 #     HEALTHCHECK API

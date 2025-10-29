@@ -43,6 +43,8 @@ sudo nano /etc/systemd/system/medbot.service
 Как зайти в нужную папку
 # на сервере
 sudo -iu deployer          # работаем от имени владельца файлов
+# Как зайти под пользователем deployer
+ssh deployer@amocrm-server
 cd /var/www/medbot
 source .venv/bin/activate (включить виртуальное окружение)
 pwd && ls -la
