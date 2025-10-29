@@ -456,37 +456,3 @@ async def send_chat_message_v2(scope_id: str,
     except Exception as exc:
         logging.warning("⚠️ ChatAPI v2 send exception: %s", exc)
         return False
-
-# =======================================
-#      🔗 ЛИНК РАЗГОВОРА К СДЕЛКЕ
-# =======================================
-
-async def link_chat_to_lead(scope_id: str, conversation_id: str, lead_id: int) -> bool:
-    """
-    Привязывает разговор Chat API (conversation_id) к сделке amoCRM.
-    Идемпотентно: повторный вызов безопасен.
-    """
-    if not scope_id or not conversation_id or not lead_id:
-        logging.warning("⚠️ link_chat_to_lead: bad params")
-        return False
-
-    url_path = f"/v2/origin/custom/{scope_id}/chats/{conversation_id}/link"
-    url = f"https://amojo.amocrm.ru{url_path}"
-
-    payload = {"entity_id": int(lead_id), "entity_type": "lead"}
-
-    try:
-        async with aiohttp.ClientSession() as s:
-            async with s.post(
-                url,
-                json=payload,
-                timeout=AMO_REQUEST_TIMEOUT_SEC,
-            ) as r:
-                txt = await r.text()
-                ok = 200 <= r.status < 300
-                logging.info("🔗 link_chat_to_lead [%s]: %s", r.status, txt)
-                return ok
-    except Exception as exc:
-        logging.warning("⚠️ link_chat_to_lead exception: %s", exc)
-        return False
-
