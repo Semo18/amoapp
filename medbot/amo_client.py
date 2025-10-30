@@ -11,10 +11,15 @@ import logging  # логи
 from pathlib import Path  # путь к .env
 from typing import Optional  # типы
 import aiohttp  # HTTP-клиент
+import uuid
+import time
+
+
 
 from dotenv import load_dotenv  # .env загрузчик
 
 from constants import AMO_REQUEST_TIMEOUT_SEC  # таймауты HTTP
+from .utils import _md5_hex_lower, _rfc1123_now_gmt, _hmac_sha1_hex_ascii
 
 # ======================
 #    Окружение/пути
@@ -207,14 +212,27 @@ async def send_chat_message_v2(
     if not secret or not scope_id:
         logging.warning("⚠️ Chat v2: missing secret or scope_id")
         return False
+    
+    # 🔴 Генерируем уникальный msgid и timestamp
+    msg_id = uuid.uuid4().hex
+    ts = int(time.time())
 
-    body = {  # минимальный валидный new_message (v2)
+    body = {
         "event_type": "new_message",
-        "conversation_id": f"tg_{chat_id}",
-        "user": {"id": str(chat_id),
-                 "name": username or f"User {chat_id}"},
-        "payload": {"message": {"type": "text",
-                                "text": (text or '')[:4000]}},
+        "payload": {
+            "timestamp": ts,
+            "conversation_id": f"tg_{chat_id}",
+            "silent": False,
+            "msgid": msg_id,
+            "sender": {
+                "id": str(chat_id),
+                "name": username or f"User {chat_id}",
+            },
+            "message": {
+                "type": "text",
+                "text": (text or "")[:4000],
+            },
+        },
     }
     body_bytes = json.dumps(
         body, ensure_ascii=False, separators=(",", ":")
@@ -222,7 +240,7 @@ async def send_chat_message_v2(
     content_md5 = _md5_hex_lower(body_bytes)
     content_type = "application/json"
     date_gmt = _rfc1123_now_gmt()
-    path = f"/v2/origin/custom/{scope_id}/chats"
+    path = f"/v2/origin/custom/{scope_id}"
     sign_src = "\n".join(["POST", content_md5, content_type, date_gmt, path])
     signature = _hmac_sha1_hex_ascii(sign_src, secret)
 
