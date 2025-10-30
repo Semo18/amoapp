@@ -201,46 +201,42 @@ def _hmac_sha1_hex_ascii(src: str, secret_ascii: str) -> str:
                    hashlib.sha1)
     return mac.hexdigest().lower()
 
+# 🔴 async, а не "sync"
 async def send_chat_message_v2(
     scope_id: str,
     chat_id: int,
     text: str,
     username: Optional[str] = None,
 ) -> bool:
-    """Отправляет событие new_message в amojo (iMbox)."""
+    """Отправляет событие new_message в amojo (iMbox) через /chats."""
     secret = os.getenv("AMO_CHAT_SECRET", "")
     if not secret or not scope_id:
         logging.warning("⚠️ Chat v2: missing secret or scope_id")
         return False
-    
-    # 🔴 Генерируем уникальный msgid и timestamp
-    msg_id = uuid.uuid4().hex
-    ts = int(time.time())
 
+    # Формируем минимально валидный payload для /chats
     body = {
         "event_type": "new_message",
+        "conversation_id": f"tg_{chat_id}",
+        "user": {
+            "id": str(chat_id),
+            "name": username or f"User {chat_id}",
+        },
         "payload": {
-            "timestamp": ts,
-            "conversation_id": f"tg_{chat_id}",
-            "silent": False,
-            "msgid": msg_id,
-            "sender": {
-                "id": str(chat_id),
-                "name": username or f"User {chat_id}",
-            },
             "message": {
                 "type": "text",
                 "text": (text or "")[:4000],
-            },
+            }
         },
     }
+
     body_bytes = json.dumps(
         body, ensure_ascii=False, separators=(",", ":")
     ).encode("utf-8")
     content_md5 = _md5_hex_lower(body_bytes)
     content_type = "application/json"
     date_gmt = _rfc1123_now_gmt()
-    path = f"/v2/origin/custom/{scope_id}"
+    path = f"/v2/origin/custom/{scope_id}/chats"
     sign_src = "\n".join(["POST", content_md5, content_type, date_gmt, path])
     signature = _hmac_sha1_hex_ascii(sign_src, secret)
 
