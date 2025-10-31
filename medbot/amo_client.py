@@ -1,5 +1,5 @@
 # amo_client.py — изолированный клиент amoCRM (HTTP и Chat API)
-# Новые/изменённые места помечены. Комментарии короткие.
+# Новые/изменённые места помечены # 🔴. Комментарии короткие.
 
 from __future__ import annotations  # типы из будущего
 
@@ -120,46 +120,32 @@ async def _create_contact(name: str) -> Optional[int]:
     arr = emb.get("contacts", [])
     return (arr[0] or {}).get("id") if arr else None
 
-
 async def create_lead_in_amo(
     chat_id: int,
     username: str,
 ) -> Optional[int]:
-    """Создаёт контакт и сделку в нужной воронке, связывает их,
-    возвращает lead_id.
-    """
+    """Создаёт контакт и сделку, связывает их, возвращает lead_id."""
     contact_id = await _create_contact(username)  # создаём контакт
     if not contact_id:
         return None
-
-    # 🔴 безопасно читаем id воронки из .env (жёсткая привязка)
-    try:  # 🔴
-        pipeline_id = int(AMO_PIPELINE_ID)  # 🔴
-    except Exception:  # 🔴
-        pipeline_id = 0  # 🔴
-
     url = f"{AMO_API_URL}/api/v4/leads"  # endpoint сделок
-
-    # формируем payload: имя + нужная воронка + привязка контакта
-    payload = [{  # один лид в "bulk add"
+    payload = [{
         "name": f"Новый запрос из Telegram ({username})",
-        "pipeline_id": pipeline_id or None,  # 🔴 фикс воронки
+        "pipeline_id": int(AMO_PIPELINE_ID),
         "_embedded": {"contacts": [{"id": contact_id}]},
     }]
-
     async with aiohttp.ClientSession() as s:
         async with s.post(
             url, headers=_auth_header(), json=payload
         ) as r:
             txt = await r.text()
             logging.info("📡 Lead resp [%s]: %s", r.status, txt)
-            if r.status == 401:  # токен протух — обновим и повторим
+            if r.status == 401:
                 await refresh_access_token()
-                return await create_lead_in_amo(chat_id, username)  # retry
+                return await create_lead_in_amo(chat_id, username)
             if r.status != 200:
                 return None
             data = await r.json()
-
     emb = data.get("_embedded", {}) if isinstance(data, dict) else {}
     arr = emb.get("leads", [])
     lead_id = (arr[0] or {}).get("id") if arr else None
@@ -215,7 +201,7 @@ def _hmac_sha1_hex_ascii(src: str, secret_ascii: str) -> str:
                    hashlib.sha1)
     return mac.hexdigest().lower()
 
-async def send_chat_message_v2(
+async def send_chat_message_v2(  # 🔴
     scope_id: str,
     chat_id: int,
     text: str,
@@ -227,30 +213,30 @@ async def send_chat_message_v2(
         logging.warning("⚠️ Chat v2: missing secret or scope_id")
         return False
 
-    # Идемпотентный msgid и метка времени (требуются в v2)
-    import uuid
-    import time
-    msgid = uuid.uuid4().hex
-    ts = int(time.time())
+    # 🔴 Идемпотентный msgid и метка времени (требуются в v2)
+    import uuid  # 🔴
+    import time  # 🔴
+    msgid = uuid.uuid4().hex  # 🔴
+    ts = int(time.time())  # 🔴
 
-    # Полностью согласно PHP-примеру amoCRM: event_type + payload
-    body = {
-        "event_type": "new_message",
-        "payload": {
-            "timestamp": ts,
-            "conversation_id": f"tg_{chat_id}"
-            "silent": False,
-            "msgid": msgid,
-            "sender": {
-                "id": str(chat_id),
-                "name": username or f"User {chat_id}",
-            },
-            "message": {
-                "type": "text",
-                "text": (text or "")[:4000],
-            },
-        },
-    }
+    # 🔴 Полностью согласно PHP-примеру amoCRM: event_type + payload
+    body = {  # 🔴
+        "event_type": "new_message",  # 🔴
+        "payload": {  # 🔴
+            "timestamp": ts,  # 🔴
+            "conversation_id": f"tg_{chat_id}",  # 🔴
+            "silent": False,  # 🔴
+            "msgid": msgid,  # 🔴
+            "sender": {  # 🔴
+                "id": str(chat_id),  # 🔴
+                "name": username or f"User {chat_id}",  # 🔴
+            },  # 🔴
+            "message": {  # 🔴
+                "type": "text",  # 🔴
+                "text": (text or "")[:4000],  # 🔴
+            },  # 🔴
+        },  # 🔴
+    }  # 🔴
 
     body_bytes = json.dumps(
         body, ensure_ascii=False, separators=(",", ":")
@@ -259,8 +245,8 @@ async def send_chat_message_v2(
     content_type = "application/json"
     date_gmt = _rfc1123_now_gmt()
 
-    # Единая точка входа (без /chats, без /chats/link)
-    path = f"/v2/origin/custom/{scope_id}"
+    # 🔴 Единая точка входа (без /chats, без /chats/link)
+    path = f"/v2/origin/custom/{scope_id}"  # 🔴
     sign_src = "\n".join([
         "POST", content_md5, content_type, date_gmt, path
     ])
