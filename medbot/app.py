@@ -160,7 +160,7 @@ async def telegram_webhook(request: Request) -> Dict[str, Any]:
         except Exception as e:
             logging.warning("⚠️ Forward to amoCRM failed: %s", e)
 
-    # ниже — логика сделки/заметок/чата amoCRM
+        # ниже — логика сделки/заметок/чата amoCRM
     if AMO_API_URL and os.getenv("AMO_ACCESS_TOKEN"):  # включена ли amo
         try:
             msg = data.get("message") or {}  # блок сообщения
@@ -175,13 +175,18 @@ async def telegram_webhook(request: Request) -> Dict[str, Any]:
 
             chat_id = int(chat_id_opt)  # 🔴 подчистили Optional → int
 
-            # пробуем получить связку chat_id → lead_id из Redis
-            lead_id = redis_get_lead_id(chat_id)
+            # 🔴 канал iMbox сам создаёт лид (управляется .env-флагом)
+            imbox_autocreate = os.getenv(
+                "AMO_IMBOX_AUTOCREATE", "1"
+            ) == "1"  # 🔴
 
-            # если связки нет — создаём сделку + контакт
-            if not lead_id:
-                lead_id = await create_lead_in_amo(  # создание лида
-                    chat_id=chat_id,               # 🔴 int гарантирован
+            # пробуем получить связку chat_id → lead_id из Redis
+            lead_id: Optional[Union[str, int]] = redis_get_lead_id(chat_id)
+
+            # 🔴 если автосоздание включено — не создаём лид вручную
+            if not imbox_autocreate and not lead_id:
+                lead_id = await create_lead_in_amo(
+                    chat_id=chat_id,
                     username=username,
                 )
                 if lead_id:
@@ -208,6 +213,7 @@ async def telegram_webhook(request: Request) -> Dict[str, Any]:
                         logging.warning("⚠️ ChatAPI send returned false")
 
             # вложения прикладываем только если есть lead_id
+            # (если лид создаёт iMbox и мы не знаем id — пропускаем)
             if lead_id and ("document" in msg or "photo" in msg):
                 file_id: Optional[str] = None  # ID файла в Telegram
                 file_name = ""  # имя файла для amo
@@ -225,7 +231,7 @@ async def telegram_webhook(request: Request) -> Dict[str, Any]:
                         file_bytes = await bot.download_file(  # контент
                             file_info.file_path
                         )
-                        uuid = await upload_file_to_amo(  # в amo-хранилище
+                        uuid = await upload_file_to_amo(  # в amo-хран
                             file_name, file_bytes.read(),
                         )
                         if uuid:
