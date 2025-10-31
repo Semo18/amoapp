@@ -120,32 +120,46 @@ async def _create_contact(name: str) -> Optional[int]:
     arr = emb.get("contacts", [])
     return (arr[0] or {}).get("id") if arr else None
 
+
 async def create_lead_in_amo(
     chat_id: int,
     username: str,
 ) -> Optional[int]:
-    """Создаёт контакт и сделку, связывает их, возвращает lead_id."""
+    """Создаёт контакт и сделку в нужной воронке, связывает их,
+    возвращает lead_id.
+    """
     contact_id = await _create_contact(username)  # создаём контакт
     if not contact_id:
         return None
+
+    # 🔴 безопасно читаем id воронки из .env (жёсткая привязка)
+    try:  # 🔴
+        pipeline_id = int(AMO_PIPELINE_ID)  # 🔴
+    except Exception:  # 🔴
+        pipeline_id = 0  # 🔴
+
     url = f"{AMO_API_URL}/api/v4/leads"  # endpoint сделок
-    payload = [{
+
+    # формируем payload: имя + нужная воронка + привязка контакта
+    payload = [{  # один лид в "bulk add"
         "name": f"Новый запрос из Telegram ({username})",
-        "pipeline_id": int(AMO_PIPELINE_ID),
+        "pipeline_id": pipeline_id or None,  # 🔴 фикс воронки
         "_embedded": {"contacts": [{"id": contact_id}]},
     }]
+
     async with aiohttp.ClientSession() as s:
         async with s.post(
             url, headers=_auth_header(), json=payload
         ) as r:
             txt = await r.text()
             logging.info("📡 Lead resp [%s]: %s", r.status, txt)
-            if r.status == 401:
+            if r.status == 401:  # токен протух — обновим и повторим
                 await refresh_access_token()
-                return await create_lead_in_amo(chat_id, username)
+                return await create_lead_in_amo(chat_id, username)  # retry
             if r.status != 200:
                 return None
             data = await r.json()
+
     emb = data.get("_embedded", {}) if isinstance(data, dict) else {}
     arr = emb.get("leads", [])
     lead_id = (arr[0] or {}).get("id") if arr else None
