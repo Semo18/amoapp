@@ -188,6 +188,9 @@ async def telegram_webhook(request: Request) -> Dict[str, Any]:
                                 lead_id, chat_id)
                     redis_set_lead_id(chat_id, str(lead_id))
 
+                    # Ждём, пока сделка “дозреет” в amo (5 сек)
+                    await asyncio.sleep(5)
+
                     # Проверяем, что сделка именно Telegram, не сторонняя
                     lead_name = await get_lead_name(lead_id)
                     if lead_name and (
