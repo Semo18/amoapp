@@ -3,7 +3,7 @@
 
 import os  # доступ к переменным окружения
 import logging  # базовое логирование
-from typing import Optional, Dict, Any  # типизация
+from typing import Optional, Union, Dict, Any  # типизация
 
 from fastapi import FastAPI, Request, HTTPException, Query  # веб-ядро
 from fastapi.middleware.cors import CORSMiddleware  # CORS-политика

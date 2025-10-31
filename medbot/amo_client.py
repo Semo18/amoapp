@@ -133,29 +133,27 @@ async def create_lead_in_amo(
         return None
 
     # 🔴 безопасно читаем id воронки из .env (жёсткая привязка)
-    try:  # 🔴
-        pipeline_id = int(AMO_PIPELINE_ID)  # 🔴
-    except Exception:  # 🔴
-        pipeline_id = 0  # 🔴
+    try:
+        pipeline_id = int(AMO_PIPELINE_ID)
+    except Exception:
+        pipeline_id = 0
 
     url = f"{AMO_API_URL}/api/v4/leads"  # endpoint сделок
 
     # формируем payload: имя + нужная воронка + привязка контакта
-    payload = [{  # один лид в "bulk add"
+    payload = [{
         "name": f"Новый запрос из Telegram ({username})",
-        "pipeline_id": pipeline_id or None,  # 🔴 фикс воронки
+        "pipeline_id": pipeline_id or None,
         "_embedded": {"contacts": [{"id": contact_id}]},
     }]
 
     async with aiohttp.ClientSession() as s:
-        async with s.post(
-            url, headers=_auth_header(), json=payload
-        ) as r:
+        async with s.post(url, headers=_auth_header(), json=payload) as r:
             txt = await r.text()
             logging.info("📡 Lead resp [%s]: %s", r.status, txt)
             if r.status == 401:  # токен протух — обновим и повторим
                 await refresh_access_token()
-                return await create_lead_in_amo(chat_id, username)  # retry
+                return await create_lead_in_amo(chat_id, username)
             if r.status != 200:
                 return None
             data = await r.json()
@@ -163,9 +161,36 @@ async def create_lead_in_amo(
     emb = data.get("_embedded", {}) if isinstance(data, dict) else {}
     arr = emb.get("leads", [])
     lead_id = (arr[0] or {}).get("id") if arr else None
+
     if lead_id:
         logging.info("✅ lead %s created for chat_id=%s", lead_id, chat_id)
+
+        # 🔴 Переносим лид в воронку "Платный канал (ИИ-врач)"
+        target_pipeline_id = int(os.getenv("AMO_PIPELINE_AI_ID", "10176698"))
+        moved = await move_lead_to_pipeline(lead_id, target_pipeline_id)
+        if moved:
+            logging.info("✅ lead %s moved to pipeline %s",
+                         lead_id, target_pipeline_id)
+        else:
+            logging.warning("⚠️ failed to move lead %s to pipeline %s",
+                            lead_id, target_pipeline_id)
+
     return lead_id
+
+
+# 🔽 вставить сразу после create_lead_in_amo
+
+async def move_lead_to_pipeline(lead_id: int, pipeline_id: int) -> bool:
+    """Переносит сделку в нужную воронку."""
+    url = f"{AMO_API_URL}/api/v4/leads/{lead_id}"
+    payload = {"pipeline_id": pipeline_id}
+
+    async with aiohttp.ClientSession() as s:
+        async with s.patch(url, headers=_auth_header(), json=payload) as r:
+            txt = await r.text()
+            logging.info("📦 Move lead resp [%s]: %s", r.status, txt)
+            return 200 <= r.status < 300
+
 
 # ======================
 #     Заметки: файл
