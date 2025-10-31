@@ -166,44 +166,60 @@ async def telegram_webhook(request: Request) -> Dict[str, Any]:
             msg = data.get("message") or {}  # блок сообщения
             chat_id_opt = (msg.get("chat") or {}).get("id")  # int|None
             text = (msg.get("text") or "").strip()  # текст апдейта
-            username = ((msg.get("from") or {}).get("username")
-                        or "unknown")  # имя юзера
+            username = ((msg.get("from") or {}).get("username") or "unknown")
 
             if chat_id_opt is None:  # защита от нестандартных апдейтов
                 logging.info("ℹ️ no chat_id in update; skip amo flow")
                 return {"ok": True}
 
-            chat_id = int(chat_id_opt)  # 🔴 подчистили Optional → int
+            chat_id = int(chat_id_opt)
 
-            # 🔴 канал iMbox сам создаёт лид (управляется .env-флагом)
-            imbox_autocreate = os.getenv(
-                "AMO_IMBOX_AUTOCREATE", "1"
-            ) == "1"  # 🔴
+            # Флаг: iMbox сам создаёт сделки (через MedBot Bridge)
+            imbox_autocreate = os.getenv("AMO_IMBOX_AUTOCREATE", "1") == "1"
 
-            # пробуем получить связку chat_id → lead_id из Redis
+            # Пробуем достать связку chat_id → lead_id из Redis
             lead_id: Optional[Union[str, int]] = redis_get_lead_id(chat_id)
 
-            # 🔴 если автосоздание включено — не создаём лид вручную
-            if not imbox_autocreate and not lead_id:
+            # Если включено автосоздание — пробуем найти существующую сделку
+            if imbox_autocreate and not lead_id:
+                lead_id = await get_latest_lead_for_chat(chat_id)
+                if lead_id:
+                    logging.info("♻️ Existing lead %s found for chat %s",
+                                lead_id, chat_id)
+                    redis_set_lead_id(chat_id, str(lead_id))
+
+                    # Проверяем, что сделка именно Telegram, не сторонняя
+                    lead_name = await get_lead_name(lead_id)
+                    if lead_name and (
+                        "telegram" in lead_name.lower() or str(chat_id) in lead_name
+                    ):
+                        target_pipeline_id = int(
+                            os.getenv("AMO_PIPELINE_AI_ID", "10176698")
+                        )
+                        await move_lead_to_pipeline(lead_id, target_pipeline_id)
+                    else:
+                        logging.info("🛑 Lead %s not Telegram — skip move", lead_id)
+
+            # Если автосоздание выключено — создаём лид вручную
+            elif not imbox_autocreate and not lead_id:
                 lead_id = await create_lead_in_amo(
                     chat_id=chat_id,
                     username=username,
                 )
                 if lead_id:
-                    redis_set_lead_id(chat_id, str(lead_id))  # кэш
+                    redis_set_lead_id(chat_id, str(lead_id))
                     logging.info("✅ lead %s created for chat %s",
-                                 lead_id, chat_id)
+                                lead_id, chat_id)
                 else:
-                    logging.warning("⚠️ lead not created for chat %s",
-                                    chat_id)
+                    logging.warning("⚠️ lead not created for chat %s", chat_id)
 
-            # отправляем клиентский текст в Chat API (iMbox)
+            # Отправляем клиентский текст в amojo Chat API (iMbox)
             if text:
                 scope_id = os.getenv("AMO_CHAT_SCOPE_ID", "").strip()
                 if not scope_id:
                     logging.warning("⚠️ AMO_CHAT_SCOPE_ID is empty")
                 else:
-                    ok = await send_chat_message_v2(  # amojo POST
+                    ok = await send_chat_message_v2(
                         scope_id=scope_id,
                         chat_id=chat_id,
                         text=text,
@@ -212,30 +228,25 @@ async def telegram_webhook(request: Request) -> Dict[str, Any]:
                     if not ok:
                         logging.warning("⚠️ ChatAPI send returned false")
 
-            # вложения прикладываем только если есть lead_id
-            # (если лид создаёт iMbox и мы не знаем id — пропускаем)
+            # Вложения отправляем только если знаем lead_id
             if lead_id and ("document" in msg or "photo" in msg):
-                file_id: Optional[str] = None  # ID файла в Telegram
-                file_name = ""  # имя файла для amo
+                file_id: Optional[str] = None
+                file_name = ""
 
-                if "document" in msg:  # документ
+                if "document" in msg:
                     file_id = msg["document"]["file_id"]
                     file_name = msg["document"].get("file_name", "file.bin")
-                elif "photo" in msg:  # фото
+                elif "photo" in msg:
                     file_id = msg["photo"][-1]["file_id"]
                     file_name = "photo.jpg"
 
                 if file_id:
                     try:
-                        file_info = await bot.get_file(file_id)  # meta
-                        file_bytes = await bot.download_file(  # контент
-                            file_info.file_path
-                        )
-                        uuid = await upload_file_to_amo(  # в amo-хран
-                            file_name, file_bytes.read(),
-                        )
+                        file_info = await bot.get_file(file_id)
+                        file_bytes = await bot.download_file(file_info.file_path)
+                        uuid = await upload_file_to_amo(file_name, file_bytes.read())
                         if uuid:
-                            ok = await add_file_note(  # привязка к сделке
+                            ok = await add_file_note(
                                 lead_id=str(lead_id),
                                 uuid=uuid,
                                 file_name=file_name or "file.bin",
@@ -245,13 +256,13 @@ async def telegram_webhook(request: Request) -> Dict[str, Any]:
                         else:
                             logging.warning("⚠️ upload_file_to_amo empty")
                     except Exception as ex:
-                        logging.warning("⚠️ file attach flow failed: %s",
-                                        ex)
+                        logging.warning("⚠️ file attach flow failed: %s", ex)
 
         except Exception as e:
             logging.warning("⚠️ amoCRM linkage failed: %s", e)
 
-    return {"ok": True}  # подтверждаем Telegram
+    return {"ok": True}
+
 
 # ======================
 #        Healthcheck

@@ -121,6 +121,38 @@ async def _create_contact(name: str) -> Optional[int]:
     return (arr[0] or {}).get("id") if arr else None
 
 
+# 🔹 Находим последнюю сделку, связанную с этим чатом
+async def get_latest_lead_for_chat(chat_id: int) -> Optional[int]:
+    """Ищет последнюю сделку, созданную по этому Telegram-чату через MedBot."""
+    url = f"{AMO_API_URL}/api/v4/leads?order=created_at&limit=10"
+    headers = _auth_header()
+
+    async with aiohttp.ClientSession() as s:
+        async with s.get(url, headers=headers) as r:
+            if r.status != 200:
+                logging.warning("⚠️ Failed to fetch leads for chat %s", chat_id)
+                return None
+            data = await r.json()
+
+    leads = data.get("_embedded", {}).get("leads", [])
+    for lead in leads:
+        name = str(lead.get("name", "")).lower()
+
+        # 💡 Проверяем, что это именно Telegram-диалог, а не другая сделка
+        if (
+            str(chat_id) in name
+            or "из telegram" in name
+            or "(telegram" in name
+            or "(tg" in name
+        ):
+            logging.info("🧩 Lead %s seems to belong to Telegram chat %s",
+                         lead.get("id"), chat_id)
+            return lead.get("id")
+
+    logging.info("ℹ️ No suitable lead found for chat %s", chat_id)
+    return None
+
+
 async def create_lead_in_amo(
     chat_id: int,
     username: str,
@@ -190,6 +222,19 @@ async def move_lead_to_pipeline(lead_id: int, pipeline_id: int) -> bool:
             txt = await r.text()
             logging.info("📦 Move lead resp [%s]: %s", r.status, txt)
             return 200 <= r.status < 300
+
+
+async def get_lead_name(lead_id: int) -> Optional[str]:
+    """Возвращает имя сделки по её ID (для проверки источника)."""
+    url = f"{AMO_API_URL}/api/v4/leads/{lead_id}"
+    headers = _auth_header()
+
+    async with aiohttp.ClientSession() as s:
+        async with s.get(url, headers=headers) as r:
+            if r.status != 200:
+                return None
+            data = await r.json()
+            return data.get("name")
 
 
 # ======================
@@ -312,3 +357,4 @@ async def send_chat_message_v2(  # 🔴
     except Exception as exc:
         logging.warning("⚠️ ChatAPI v2 send exception: %s", exc)
         return False
+
